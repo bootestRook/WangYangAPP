@@ -3,6 +3,11 @@ setlocal
 
 cd /d "%~dp0"
 
+set "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/"
+set "npm_config_electron_mirror=https://npmmirror.com/mirrors/electron/"
+set "npm_config_registry=https://registry.npmmirror.com/"
+set "npm_config_disturl=https://npmmirror.com/mirrors/node/"
+
 where npm >nul 2>nul
 if errorlevel 1 (
   echo npm was not found. Please install Node.js first.
@@ -12,7 +17,7 @@ if errorlevel 1 (
 
 if not exist "node_modules\electron\dist\electron.exe" (
   echo Installing dependencies...
-  call npm install
+  call npm install --registry=https://registry.npmmirror.com/
   if errorlevel 1 goto failed
 )
 
