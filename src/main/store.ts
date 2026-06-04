@@ -35,7 +35,7 @@ export const defaultLocalSettings: LocalSettings = {
     agentToolPermissionMode: 'request',
     responseStylePreset: 'wangyang-roast',
     autoSummaryThresholdPercent: 70,
-    maxContextWindowLimit: 64000,
+    maxContextWindowLimit: 128000,
     defaultAssistedPrompt: '请根据当前上下文辅助我继续创作，并给出可直接采用的修改建议。',
     defaultSelectedPromptId: '',
     prompts: [

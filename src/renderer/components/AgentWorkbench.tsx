@@ -9,6 +9,7 @@ import {
   Download,
   Eye,
   FileText,
+  Gauge,
   Image as ImageIcon,
   Info,
   Lightbulb,
@@ -114,7 +115,7 @@ function splitDisplayedUserContent(content: string): { visible: string; context?
   }
 }
 
-type ComposerPanel = 'none' | 'mention' | 'slash' | 'prompts' | 'thinking' | 'permissions'
+type ComposerPanel = 'none' | 'mention' | 'slash' | 'prompts' | 'thinking' | 'permissions' | 'capacity'
 type ContextMode = 'none' | 'project' | 'current-file' | 'smart-context'
 type ThinkingMode = 'fast' | 'balanced' | 'deep'
 type AgentSolutionId = 'professional' | 'planning' | 'adventure'
@@ -134,6 +135,14 @@ type TextFileAttachment = {
   name: string
   size: number
   content: string
+}
+type ContextCapacityPreset = {
+  id: string
+  label: string
+  description: string
+  maxContextWindowLimit: number
+  autoSummaryThresholdPercent: number
+  maxContextFiles: number
 }
 
 const AGENT_MODEL_OVERRIDES_KEY = 'wangyang.agent.modelOverrides'
@@ -211,6 +220,48 @@ function runtimeModelStatus(config: AiConfig | undefined, modelId: string) {
     isReady: Boolean(config && isConfiguredRuntimeModel(config, modelId))
   }
 }
+
+function formatContextCapacity(tokens: number): string {
+  if (tokens >= 1000) return `${Math.round(tokens / 1000)}k`
+  return String(tokens)
+}
+
+const contextCapacityPresets: ContextCapacityPreset[] = [
+  {
+    id: 'full',
+    label: '最大上下文',
+    description: '尽量保留更多项目上下文，适合长任务。',
+    maxContextWindowLimit: 256000,
+    autoSummaryThresholdPercent: 90,
+    maxContextFiles: 16
+  },
+  {
+    id: 'balanced',
+    label: '自动压缩',
+    description: '默认平衡档，接近上限时自动收缩上下文。',
+    maxContextWindowLimit: 128000,
+    autoSummaryThresholdPercent: 70,
+    maxContextFiles: 12
+  },
+  {
+    id: 'compact',
+    label: '压缩上下文',
+    description: '减少携带文件和文本量，回复更稳更快。',
+    maxContextWindowLimit: 64000,
+    autoSummaryThresholdPercent: 55,
+    maxContextFiles: 8
+  },
+  {
+    id: 'minimal',
+    label: '极简上下文',
+    description: '只保留关键上下文，适合短问答或低容量模型。',
+    maxContextWindowLimit: 32000,
+    autoSummaryThresholdPercent: 40,
+    maxContextFiles: 4
+  }
+]
+
+const legacyClampedBalancedContextLimit = 64000
 
 const contextOptions: Array<{ value: ContextMode; label: string; instruction: string }> = [
   { value: 'none', label: '无上下文', instruction: '' },
@@ -647,6 +698,16 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
   const activeRuntimeModelHasOverride = activeRuntimeModel !== defaultActiveRuntimeModel
   const selectedModelMetadata = aiConfig?.modelMetadata[activeRuntimeModel]
   const activeRuntimeModelStatus = runtimeModelStatus(aiConfig, activeRuntimeModel)
+  const configuredContextLimit = localSettings?.promptContext.maxContextWindowLimit ?? 128000
+  const activeModelContextLimit = selectedModelMetadata?.maxContextWindow ?? configuredContextLimit
+  const effectiveContextLimit = configuredContextLimit
+  const selectedContextCapacityPreset =
+    contextCapacityPresets.find(
+      (preset) =>
+        preset.maxContextWindowLimit === configuredContextLimit &&
+        preset.autoSummaryThresholdPercent === localSettings?.promptContext.autoSummaryThresholdPercent &&
+        preset.maxContextFiles === localSettings?.promptContext.maxContextFiles
+    ) ?? contextCapacityPresets.find((preset) => preset.id === 'balanced') ?? contextCapacityPresets[0]
   const manualSubAgentProfile = profileForSubAgentRole(subAgentRole)
   const manualSubAgentModel = runtimeModelForProfile(aiConfig, selectedModel, manualSubAgentProfile, modelOverrides)
   const manualSubAgentModelStatus = runtimeModelStatus(aiConfig, manualSubAgentModel)
@@ -1092,8 +1153,16 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
 
   const importHistorySessions = async (): Promise<void> => {
     if (isRunning || historyImporting) return
-    const defaultDirectory = projectRoot ? `${projectRoot.replace(/[\\/]+$/, '')}/.wangyang` : undefined
+    const defaultDirectory = projectRoot ? `${projectRoot.replace(/[\\/]+$/, '')}/.wangyang/sessions` : undefined
     setHistoryImportNotice('')
+
+    if (projectRoot) {
+      try {
+        await window.electronAPI.createEntry('.wangyang/sessions', 'directory')
+      } catch {
+        // The directory may already exist or be unavailable; the dialog can still fall back gracefully.
+      }
+    }
 
     const selected = await window.electronAPI.selectDirectory(defaultDirectory)
     if (!selected?.path) return
@@ -1144,6 +1213,21 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
       }
     })
   }
+
+  useEffect(() => {
+    if (!localSettings) return
+    const context = localSettings.promptContext
+    const wasClampedBalancedPreset =
+      context.maxContextWindowLimit === legacyClampedBalancedContextLimit &&
+      context.autoSummaryThresholdPercent === 70 &&
+      context.maxContextFiles === 12
+    if (!wasClampedBalancedPreset) return
+    updatePromptContext({ maxContextWindowLimit: 128000 })
+  }, [
+    localSettings?.promptContext.autoSummaryThresholdPercent,
+    localSettings?.promptContext.maxContextFiles,
+    localSettings?.promptContext.maxContextWindowLimit
+  ])
 
   const writeTodos = async (items: TodoItem[]): Promise<void> => {
     const normalized = items.map((item) => ({
@@ -1417,6 +1501,63 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
                 {selectedPermissionMode === mode.value ? <Check size={14} /> : null}
               </button>
             ))}
+          </div>
+        </div>
+      )
+    }
+
+    if (composerPanel === 'capacity') {
+      return (
+        <div className="composer-popup capacity-popup">
+          <header>
+            <strong>上下文容量</strong>
+            <button onClick={() => setComposerPanel('none')}>
+              <X size={13} />
+            </button>
+          </header>
+          <div className="capacity-current">
+            <Gauge size={14} />
+            <span>
+              当前上限 {formatContextCapacity(effectiveContextLimit)}
+              <small>
+                模型 {formatContextCapacity(activeModelContextLimit)} / 设置 {formatContextCapacity(configuredContextLimit)}
+                / 阈值 {localSettings?.promptContext.autoSummaryThresholdPercent ?? 70}%
+              </small>
+            </span>
+          </div>
+          <div className="popup-list">
+            {contextCapacityPresets.map((preset) => {
+              const isActive =
+                localSettings?.promptContext.maxContextWindowLimit === preset.maxContextWindowLimit &&
+                localSettings?.promptContext.autoSummaryThresholdPercent === preset.autoSummaryThresholdPercent &&
+                localSettings?.promptContext.maxContextFiles === preset.maxContextFiles
+              return (
+                <button
+                  className={isActive ? 'active' : ''}
+                  disabled={!localSettings}
+                  key={preset.id}
+                  onClick={() => {
+                    updatePromptContext({
+                      maxContextWindowLimit: preset.maxContextWindowLimit,
+                      autoSummaryThresholdPercent: preset.autoSummaryThresholdPercent,
+                      maxContextFiles: preset.maxContextFiles
+                    })
+                    setComposerPanel('none')
+                  }}
+                >
+                  <Gauge size={14} />
+                  <span>
+                    <strong>
+                      {preset.label} · {formatContextCapacity(preset.maxContextWindowLimit)}
+                    </strong>
+                    <small>
+                      {preset.description} 阈值 {preset.autoSummaryThresholdPercent}% / 文件 {preset.maxContextFiles}
+                    </small>
+                  </span>
+                  {isActive ? <Check size={14} /> : null}
+                </button>
+              )
+            })}
           </div>
         </div>
       )
@@ -2199,6 +2340,14 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
               </option>
             ))}
           </select>
+          <button
+            className={composerPanel === 'capacity' ? 'context-capacity-button active' : 'context-capacity-button'}
+            title={`上下文容量：${formatContextCapacity(effectiveContextLimit)}。当前档位：${selectedContextCapacityPreset.label}`}
+            onClick={() => setComposerPanel((panel) => (panel === 'capacity' ? 'none' : 'capacity'))}
+          >
+            <Gauge size={12} />
+            <span>{formatContextCapacity(effectiveContextLimit)}</span>
+          </button>
           {activeFilePath ? (
             <button title={activeFilePath} onClick={() => setContextMode('current-file')}>
               <FileText size={13} />

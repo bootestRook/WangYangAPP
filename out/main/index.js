@@ -639,7 +639,7 @@ const defaultLocalSettings = {
     agentToolPermissionMode: "request",
     responseStylePreset: "wangyang-roast",
     autoSummaryThresholdPercent: 70,
-    maxContextWindowLimit: 64e3,
+    maxContextWindowLimit: 128e3,
     defaultAssistedPrompt: "请根据当前上下文辅助我继续创作，并给出可直接采用的修改建议。",
     defaultSelectedPromptId: "",
     prompts: [
@@ -2944,6 +2944,7 @@ const IPC = {
 const TEXT_IMPORT_EXTENSIONS = /* @__PURE__ */ new Set([".txt", ".md", ".markdown", ".html", ".htm"]);
 const MAX_TEXT_IMPORT_BYTES = 20 * 1024 * 1024;
 const AGENT_SESSIONS_FILE_NAME = "agent-sessions.json";
+const AGENT_SESSIONS_DIRECTORY_NAME = "sessions";
 function uniqueStrings(values) {
   return values.filter((value, index, all) => value && all.indexOf(value) === index);
 }
@@ -2997,11 +2998,52 @@ async function listRemoteProviderModels(provider) {
   throw new Error(lastError || "加载模型失败");
 }
 function normalizeImportedAgentSessions(value) {
-  if (!Array.isArray(value)) return [];
-  return value.filter((session) => {
+  const values = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
+  return values.filter((session) => {
     const candidate = session;
     return typeof candidate.id === "string" && typeof candidate.title === "string" && ["professional", "planning", "writing", "adventure"].includes(String(candidate.mode)) && Array.isArray(candidate.messages) && typeof candidate.createdAt === "number" && typeof candidate.updatedAt === "number";
   });
+}
+function mergeImportedAgentSessions(sessions) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const session of sessions) {
+    const existing = byId.get(session.id);
+    if (!existing || session.updatedAt >= existing.updatedAt) byId.set(session.id, session);
+  }
+  return [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+async function listExternalSessionFiles(directoryPath, depth = 4) {
+  if (depth < 0) return [];
+  let entries;
+  try {
+    entries = await promises.readdir(directoryPath, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const files = [];
+  for (const entry of entries) {
+    const fullPath = path.join(directoryPath, entry.name);
+    if (entry.isFile() && entry.name.toLowerCase().endsWith(".json")) {
+      files.push(fullPath);
+      continue;
+    }
+    if (entry.isDirectory()) {
+      files.push(...await listExternalSessionFiles(fullPath, depth - 1));
+    }
+  }
+  return files;
+}
+async function readSplitAgentSessions(directoryPath) {
+  const files = await listExternalSessionFiles(directoryPath);
+  const sessions = [];
+  for (const file of files) {
+    try {
+      const raw = await promises.readFile(file, "utf8");
+      sessions.push(...normalizeImportedAgentSessions(JSON.parse(raw)));
+    } catch {
+    }
+  }
+  return mergeImportedAgentSessions(sessions);
 }
 async function readAgentSessionsFromDirectory(directoryPath) {
   const resolved = path.resolve(directoryPath);
@@ -3017,6 +3059,16 @@ async function readAgentSessionsFromDirectory(directoryPath) {
       return { path: candidate, sessions };
     } catch {
     }
+  }
+  const pathSegments = resolved.split(path.sep).map((segment) => segment.toLowerCase());
+  const splitCandidates = uniqueStrings([
+    pathSegments.includes(AGENT_SESSIONS_DIRECTORY_NAME) ? resolved : "",
+    path.join(resolved, AGENT_SESSIONS_DIRECTORY_NAME),
+    path.join(resolved, ".wangyang", AGENT_SESSIONS_DIRECTORY_NAME)
+  ]);
+  for (const candidate of splitCandidates) {
+    const sessions = await readSplitAgentSessions(candidate);
+    if (sessions.length) return { path: candidate, sessions };
   }
   throw new Error("未找到可导入的历史会话文件。请选择包含 agent-sessions.json 的文件夹，或项目根目录。");
 }

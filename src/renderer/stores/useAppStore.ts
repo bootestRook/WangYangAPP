@@ -102,6 +102,7 @@ interface AppState {
 const AGENT_SESSIONS_KEY = 'wangyang.agent.sessions'
 const SUB_AGENT_SESSIONS_KEY = 'wangyang.sub-agent.sessions'
 const PROJECT_AGENT_SESSIONS_PATH = '.wangyang/agent-sessions.json'
+const PROJECT_AGENT_SESSIONS_ROOT = '.wangyang/sessions'
 const ADVANCED_EDITOR_VIEW_KEY = 'wangyang.editor.advanced-view'
 
 function readStoredEditorView(fallback: EditorViewMode): EditorViewMode {
@@ -116,8 +117,8 @@ function id(prefix: string): string {
 }
 
 function normalizeAgentSessions(value: unknown): AgentSession[] {
-  if (!Array.isArray(value)) return []
-  return value.filter((session): session is AgentSession => {
+  const values = Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : []
+  return values.filter((session): session is AgentSession => {
     const candidate = session as Partial<AgentSession>
     return (
       typeof candidate.id === 'string' &&
@@ -127,6 +128,59 @@ function normalizeAgentSessions(value: unknown): AgentSession[] {
       typeof candidate.updatedAt === 'number'
     )
   })
+}
+
+function mergeAgentSessions(sessions: AgentSession[]): AgentSession[] {
+  const byId = new Map<string, AgentSession>()
+  for (const session of sessions) {
+    const existing = byId.get(session.id)
+    if (!existing || session.updatedAt >= existing.updatedAt) byId.set(session.id, session)
+  }
+  return [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50)
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+function sessionDatePath(session: AgentSession): string {
+  const date = new Date(Number.isFinite(session.createdAt) ? session.createdAt : Date.now())
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date
+  return [
+    String(safeDate.getFullYear()),
+    padDatePart(safeDate.getMonth() + 1),
+    padDatePart(safeDate.getDate())
+  ].join('/')
+}
+
+function safeSessionFileName(sessionId: string): string {
+  return `${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`
+}
+
+function projectAgentSessionPath(session: AgentSession): string {
+  return `${PROJECT_AGENT_SESSIONS_ROOT}/${sessionDatePath(session)}/${safeSessionFileName(session.id)}`
+}
+
+async function listProjectAgentSessionFiles(relativePath = PROJECT_AGENT_SESSIONS_ROOT, depth = 4): Promise<string[]> {
+  if (depth < 0) return []
+  let listing: DirectoryListing
+  try {
+    listing = await window.electronAPI.listDirectory(relativePath)
+  } catch {
+    return []
+  }
+
+  const files: string[] = []
+  for (const entry of listing.entries) {
+    if (entry.type === 'file' && entry.name.toLowerCase().endsWith('.json')) {
+      files.push(entry.relativePath)
+      continue
+    }
+    if (entry.type === 'directory') {
+      files.push(...(await listProjectAgentSessionFiles(entry.relativePath, depth - 1)))
+    }
+  }
+  return files
 }
 
 function readLegacyAgentSessions(): AgentSession[] {
@@ -144,21 +198,74 @@ function writeLegacyAgentSessions(sessions: AgentSession[]): void {
 }
 
 async function readProjectAgentSessions(): Promise<AgentSession[]> {
+  const sessions: AgentSession[] = []
+  const sessionFiles = await listProjectAgentSessionFiles()
+  for (const sessionFile of sessionFiles) {
+    try {
+      const raw = await window.electronAPI.readFile(sessionFile)
+      sessions.push(...normalizeAgentSessions(JSON.parse(raw)))
+    } catch {
+      // Ignore malformed historical session files and keep loading the rest.
+    }
+  }
+
+  let legacySessions: AgentSession[] = []
   try {
     const raw = await window.electronAPI.readFile(PROJECT_AGENT_SESSIONS_PATH)
-    return normalizeAgentSessions(JSON.parse(raw))
+    legacySessions = normalizeAgentSessions(JSON.parse(raw))
   } catch {
-    return []
+    legacySessions = []
+  }
+
+  const merged = mergeAgentSessions([...sessions, ...legacySessions])
+  if (legacySessions.length) void persistProjectAgentSessions(merged)
+  return merged
+}
+
+async function persistProjectAgentSessions(sessions: AgentSession[]): Promise<void> {
+  const capped = mergeAgentSessions(sessions)
+  for (const session of capped) {
+    await window.electronAPI.writeFile(projectAgentSessionPath(session), `${JSON.stringify(session, null, 2)}\n`)
+  }
+  try {
+    await window.electronAPI.deleteEntry(PROJECT_AGENT_SESSIONS_PATH)
+  } catch {
+    // Older aggregate history may not exist after migration.
+  }
+}
+
+async function removeProjectAgentSessionFiles(sessionId: string): Promise<void> {
+  const targetName = safeSessionFileName(sessionId)
+  const files = await listProjectAgentSessionFiles()
+  for (const file of files) {
+    if (file.split('/').pop() !== targetName) continue
+    try {
+      await window.electronAPI.deleteEntry(file)
+    } catch {
+      // Continue removing other matching files.
+    }
+  }
+}
+
+async function clearProjectAgentSessionFiles(): Promise<void> {
+  try {
+    await window.electronAPI.deleteEntry(PROJECT_AGENT_SESSIONS_ROOT)
+  } catch {
+    // The split history directory may not exist yet.
+  }
+  try {
+    await window.electronAPI.deleteEntry(PROJECT_AGENT_SESSIONS_PATH)
+  } catch {
+    // The legacy aggregate history file may not exist.
   }
 }
 
 function persistAgentSessions(sessions: AgentSession[], hasProjectRoot: boolean): void {
-  const serialized = `${JSON.stringify(sessions.slice(0, 50), null, 2)}\n`
   if (!hasProjectRoot) {
     writeLegacyAgentSessions(sessions)
     return
   }
-  void window.electronAPI.writeFile(PROJECT_AGENT_SESSIONS_PATH, serialized)
+  void persistProjectAgentSessions(sessions)
 }
 
 function readSubAgentSessions(): SubAgentSession[] {
@@ -356,8 +463,52 @@ function upsertAgentSession(
   return [nextSession, ...sessions.filter((session) => session.id !== sessionId)].slice(0, 50)
 }
 
+function latestRestorableAgentSession(sessions: AgentSession[]): AgentSession | undefined {
+  return [...sessions]
+    .filter((session) => session.messages.some((message) => message.role !== 'system'))
+    .sort((left, right) => right.updatedAt - left.updatedAt)[0]
+}
+
+function restoredAgentSessionState(sessions: AgentSession[], fallbackMode: AgentMode): Pick<AppState, 'currentSessionId' | 'agentMode' | 'messages'> {
+  const latest = latestRestorableAgentSession(sessions)
+  if (!latest) {
+    return {
+      currentSessionId: id('session'),
+      agentMode: fallbackMode,
+      messages: []
+    }
+  }
+  return {
+    currentSessionId: latest.id,
+    agentMode: latest.mode,
+    messages: latest.messages
+  }
+}
+
 function hasActiveRun(state: AppState): boolean {
   return state.isRunning || Boolean(state.abortController)
+}
+
+let pendingAgentSessionPersist: number | undefined
+
+function scheduleAgentSessionPersist(getState: () => AppState, setState: (patch: Partial<AppState>) => void): void {
+  if (pendingAgentSessionPersist) {
+    window.clearTimeout(pendingAgentSessionPersist)
+  }
+
+  pendingAgentSessionPersist = window.setTimeout(() => {
+    pendingAgentSessionPersist = undefined
+    const state = getState()
+    const sessions = upsertAgentSession(state.agentSessions, state.currentSessionId, state.messages, state.agentMode)
+    if (sessions === state.agentSessions) return
+
+    persistAgentSessions(sessions, Boolean(state.projectRoot))
+    setState(
+      state.projectRoot
+        ? { agentSessions: sessions }
+        : { agentSessions: sessions, legacyAgentSessions: sessions }
+    )
+  }, 500)
 }
 
 function createSystemMessage(state: Pick<AppState, 'projectRoot' | 'activeFilePath' | 'agentMode' | 'localSettings'>): ChatMessage {
@@ -439,11 +590,12 @@ async function buildProjectContextBlock(
   if (!state.projectRoot || !state.localSettings) return ''
   const settings = state.localSettings.promptContext
   const maxFiles = Math.max(1, Math.min(100, settings.maxContextFiles || 1))
+  const configuredContextWindow = Math.max(6000, settings.maxContextWindowLimit || 128000)
   const maxTotalChars = Math.min(
-    50000,
-    Math.max(6000, Math.floor((settings.maxContextWindowLimit * settings.autoSummaryThresholdPercent) / 100))
+    configuredContextWindow,
+    Math.max(6000, Math.floor((configuredContextWindow * settings.autoSummaryThresholdPercent) / 100))
   )
-  const maxPerFile = Math.max(1200, Math.min(6000, Math.floor(maxTotalChars / Math.max(1, maxFiles))))
+  const maxPerFile = Math.max(1200, Math.min(32000, Math.ceil(maxTotalChars / Math.max(1, maxFiles))))
   const sources: ContextSource[] = []
   const seen = new Set<string>()
   let usedChars = 0
@@ -623,6 +775,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const snapshot = await window.electronAPI.getAppSnapshot()
     const agentSessions = snapshot.projectRoot ? await readProjectAgentSessions() : readLegacyAgentSessions()
     const subAgentSessions = snapshot.projectRoot ? await readProjectSubAgentSessions() : readSubAgentSessions()
+    const restoredAgentSession = restoredAgentSessionState(agentSessions, 'professional')
     set({
       initialized: true,
       projectRoot: snapshot.projectRoot,
@@ -632,6 +785,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       agentSessions,
       legacyAgentSessions: readLegacyAgentSessions(),
       subAgentSessions,
+      ...restoredAgentSession,
       selectedModel: pickRuntimeModel(snapshot.aiConfig, snapshot.aiConfig.scenario.agent)
     })
     if (snapshot.projectRoot) {
@@ -645,17 +799,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     const snapshot = await window.electronAPI.setProjectRoot(root)
     const agentSessions = snapshot.projectRoot ? await readProjectAgentSessions() : readLegacyAgentSessions()
     const subAgentSessions = snapshot.projectRoot ? await readProjectSubAgentSessions() : readSubAgentSessions()
+    const restoredAgentSession = restoredAgentSessionState(agentSessions, 'professional')
     set({
       projectRoot: snapshot.projectRoot,
       aiConfig: snapshot.aiConfig,
       agentSessions,
       subAgentSessions,
-      currentSessionId: id('session'),
+      ...restoredAgentSession,
       selectedModel: pickRuntimeModel(snapshot.aiConfig, snapshot.aiConfig.scenario.agent),
       activeFilePath: undefined,
       editorContent: '',
       editorDirty: false,
-      messages: [],
       draft: '',
       error: undefined
     })
@@ -666,17 +820,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     const snapshot = await window.electronAPI.openProject(projectId)
     const agentSessions = snapshot.projectRoot ? await readProjectAgentSessions() : readLegacyAgentSessions()
     const subAgentSessions = snapshot.projectRoot ? await readProjectSubAgentSessions() : readSubAgentSessions()
+    const restoredAgentSession = restoredAgentSessionState(agentSessions, 'professional')
     set({
       projectRoot: snapshot.projectRoot,
       aiConfig: snapshot.aiConfig,
       agentSessions,
       subAgentSessions,
-      currentSessionId: id('session'),
+      ...restoredAgentSession,
       selectedModel: pickRuntimeModel(snapshot.aiConfig, snapshot.aiConfig.scenario.agent),
       activeFilePath: undefined,
       editorContent: '',
       editorDirty: false,
-      messages: [],
       draft: '',
       error: undefined
     })
@@ -855,6 +1009,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (hasActiveRun(state)) return
     const sessions = state.agentSessions.filter((session) => session.id !== sessionId)
     persistAgentSessions(sessions, Boolean(state.projectRoot))
+    if (state.projectRoot) void removeProjectAgentSessionFiles(sessionId)
     set((current) => ({
       agentSessions: sessions,
       currentSessionId: current.currentSessionId === sessionId ? id('session') : current.currentSessionId,
@@ -866,6 +1021,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get()
     if (hasActiveRun(state)) return
     persistAgentSessions([], Boolean(state.projectRoot))
+    if (state.projectRoot) void clearProjectAgentSessionFiles()
     set({ agentSessions: [], currentSessionId: id('session'), messages: [], draft: '' })
   },
 
@@ -1130,6 +1286,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         : [systemMessage]
       const initialMessages = [...currentMessages, userMessage]
       set({ messages: initialMessages })
+      scheduleAgentSessionPersist(get, set)
 
       const runtimeModelId = pickRuntimeModel(state.aiConfig, options?.modelId ?? state.selectedModel)
       const subAgentModelOverrides = options?.subAgentModelOverrides ?? {}
@@ -1170,6 +1327,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             createdAt: Date.now()
           }
           set({ messages: [...get().messages, assistantMessage] })
+          scheduleAgentSessionPersist(get, set)
         }
 
         if (event.type === 'text-delta' && event.messageId && event.text) {
@@ -1180,10 +1338,12 @@ export const useAppStore = create<AppState>((set, get) => ({
                 : message
             )
           })
+          scheduleAgentSessionPersist(get, set)
         }
 
         if (event.type === 'tool-call' && event.messageId && event.toolCall) {
           set({ messages: upsertAssistantToolCall(get().messages, event.messageId, event.toolCall) })
+          scheduleAgentSessionPersist(get, set)
         }
 
         if (event.type === 'tool-result' && event.toolResult) {
@@ -1199,16 +1359,19 @@ export const useAppStore = create<AppState>((set, get) => ({
               }
             ]
           })
+          scheduleAgentSessionPersist(get, set)
         }
 
         if (event.type === 'error') {
           runError = event.error ?? 'Agent failed.'
           set({ error: runError, messages: upsertAssistantErrorMessage(get().messages, runError) })
+          scheduleAgentSessionPersist(get, set)
         }
       }
     } catch (error) {
       runError = error instanceof Error ? error.message : String(error)
       set({ error: runError, messages: upsertAssistantErrorMessage(get().messages, runError) })
+      scheduleAgentSessionPersist(get, set)
     } finally {
       const finalState = get()
       if (finalState.currentSessionId === runSessionId) {

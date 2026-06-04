@@ -4191,6 +4191,20 @@ pre {
   background: var(--wy-bg-secondary);
 }
 
+.context-line .context-capacity-button {
+  flex: 0 0 auto;
+  border-color: rgba(95, 191, 159, 0.44);
+  background: rgba(95, 191, 159, 0.1);
+  color: var(--wy-success);
+  font-weight: 700;
+}
+
+.context-line .context-capacity-button.active {
+  border-color: var(--wy-primary-active);
+  background: var(--wy-selected);
+  color: var(--wy-accent);
+}
+
 .context-line .image-chip img {
   width: 16px;
   height: 16px;
@@ -4373,6 +4387,40 @@ pre {
 .permission-popup .popup-list button small {
   white-space: normal;
   line-height: 1.35;
+}
+
+.capacity-popup .popup-list button {
+  grid-template-columns: 20px minmax(0, 1fr) 18px;
+}
+
+.capacity-popup .popup-list button small {
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.capacity-current {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--wy-border);
+  border-radius: 6px;
+  background: var(--wy-bg-secondary);
+  color: var(--wy-text-secondary);
+}
+
+.capacity-current span,
+.capacity-current small {
+  min-width: 0;
+  display: block;
+}
+
+.capacity-current small {
+  margin-top: 2px;
+  color: var(--wy-text-muted);
+  font-size: 11px;
 }
 
 .agent-composer textarea {
@@ -7651,6 +7699,25 @@ html body .history-panel > header > div button {
 
 html body .history-panel > header > div button:last-child {
   min-width: 70px;
+}
+
+/* Context capacity picker stays compact and readable in the composer line. */
+html body .context-line .context-capacity-button {
+  flex: 0 0 auto;
+  border-color: rgba(95, 191, 159, 0.44) !important;
+  background: rgba(95, 191, 159, 0.1) !important;
+  color: var(--wy-success) !important;
+  font-weight: 700;
+}
+
+html body .context-line .context-capacity-button.active {
+  border-color: var(--wy-primary-active) !important;
+  background: var(--wy-selected) !important;
+  color: var(--wy-accent) !important;
+}
+
+html body .capacity-popup .popup-list button {
+  grid-template-columns: 20px minmax(0, 1fr) 18px;
 }
 
 /* Light theme guard: process/tool trace surfaces must not keep dark-mode blocks. */

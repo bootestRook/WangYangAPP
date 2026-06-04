@@ -1,6 +1,12 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type { IpcMainInvokeEvent, OpenDialogOptions } from 'electron'
-import { mkdir, readFile as readExternalFile, stat as statExternalFile, writeFile as writeExternalFile } from 'node:fs/promises'
+import {
+  mkdir,
+  readdir as readExternalDirectory,
+  readFile as readExternalFile,
+  stat as statExternalFile,
+  writeFile as writeExternalFile
+} from 'node:fs/promises'
 import path from 'node:path'
 import { refreshBackupScheduler } from './backup/backupScheduler'
 import { createProjectBackup, listProjectBackups } from './backup/backupService'
@@ -53,6 +59,7 @@ import type {
 const TEXT_IMPORT_EXTENSIONS = new Set(['.txt', '.md', '.markdown', '.html', '.htm'])
 const MAX_TEXT_IMPORT_BYTES = 20 * 1024 * 1024
 const AGENT_SESSIONS_FILE_NAME = 'agent-sessions.json'
+const AGENT_SESSIONS_DIRECTORY_NAME = 'sessions'
 
 function uniqueStrings(values: string[]): string[] {
   return values.filter((value, index, all) => value && all.indexOf(value) === index)
@@ -115,8 +122,8 @@ async function listRemoteProviderModels(provider: ModelInterfaceConfig): Promise
 }
 
 function normalizeImportedAgentSessions(value: unknown): AgentSession[] {
-  if (!Array.isArray(value)) return []
-  return value.filter((session): session is AgentSession => {
+  const values = Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : []
+  return values.filter((session): session is AgentSession => {
     const candidate = session as Partial<AgentSession>
     return (
       typeof candidate.id === 'string' &&
@@ -127,6 +134,52 @@ function normalizeImportedAgentSessions(value: unknown): AgentSession[] {
       typeof candidate.updatedAt === 'number'
     )
   })
+}
+
+function mergeImportedAgentSessions(sessions: AgentSession[]): AgentSession[] {
+  const byId = new Map<string, AgentSession>()
+  for (const session of sessions) {
+    const existing = byId.get(session.id)
+    if (!existing || session.updatedAt >= existing.updatedAt) byId.set(session.id, session)
+  }
+  return [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+async function listExternalSessionFiles(directoryPath: string, depth = 4): Promise<string[]> {
+  if (depth < 0) return []
+  let entries
+  try {
+    entries = await readExternalDirectory(directoryPath, { withFileTypes: true })
+  } catch {
+    return []
+  }
+
+  const files: string[] = []
+  for (const entry of entries) {
+    const fullPath = path.join(directoryPath, entry.name)
+    if (entry.isFile() && entry.name.toLowerCase().endsWith('.json')) {
+      files.push(fullPath)
+      continue
+    }
+    if (entry.isDirectory()) {
+      files.push(...(await listExternalSessionFiles(fullPath, depth - 1)))
+    }
+  }
+  return files
+}
+
+async function readSplitAgentSessions(directoryPath: string): Promise<AgentSession[]> {
+  const files = await listExternalSessionFiles(directoryPath)
+  const sessions: AgentSession[] = []
+  for (const file of files) {
+    try {
+      const raw = await readExternalFile(file, 'utf8')
+      sessions.push(...normalizeImportedAgentSessions(JSON.parse(raw)))
+    } catch {
+      // Ignore unrelated JSON files in selected history folders.
+    }
+  }
+  return mergeImportedAgentSessions(sessions)
 }
 
 async function readAgentSessionsFromDirectory(directoryPath: string): Promise<{ path: string; sessions: AgentSession[] }> {
@@ -145,6 +198,18 @@ async function readAgentSessionsFromDirectory(directoryPath: string): Promise<{ 
     } catch {
       // Try the next conventional history location.
     }
+  }
+
+  const pathSegments = resolved.split(path.sep).map((segment) => segment.toLowerCase())
+  const splitCandidates = uniqueStrings([
+    pathSegments.includes(AGENT_SESSIONS_DIRECTORY_NAME) ? resolved : '',
+    path.join(resolved, AGENT_SESSIONS_DIRECTORY_NAME),
+    path.join(resolved, '.wangyang', AGENT_SESSIONS_DIRECTORY_NAME)
+  ])
+
+  for (const candidate of splitCandidates) {
+    const sessions = await readSplitAgentSessions(candidate)
+    if (sessions.length) return { path: candidate, sessions }
   }
 
   throw new Error('未找到可导入的历史会话文件。请选择包含 agent-sessions.json 的文件夹，或项目根目录。')

@@ -49789,6 +49789,16 @@ const FileText = createLucideIcon("FileText", [
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */
+const Gauge = createLucideIcon("Gauge", [
+  ["path", { d: "m12 14 4-4", key: "9kzdfg" }],
+  ["path", { d: "M3.34 19a10 10 0 1 1 17.32 0", key: "19p75a" }]
+]);
+/**
+ * @license lucide-react v0.468.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */
 const Heading1 = createLucideIcon("Heading1", [
   ["path", { d: "M4 12h8", key: "17cfdx" }],
   ["path", { d: "M4 18V6", key: "1rz3zl" }],
@@ -59732,6 +59742,7 @@ async function createToolRegistry(api2, options = {}) {
 const AGENT_SESSIONS_KEY = "wangyang.agent.sessions";
 const SUB_AGENT_SESSIONS_KEY = "wangyang.sub-agent.sessions";
 const PROJECT_AGENT_SESSIONS_PATH = ".wangyang/agent-sessions.json";
+const PROJECT_AGENT_SESSIONS_ROOT = ".wangyang/sessions";
 const ADVANCED_EDITOR_VIEW_KEY$1 = "wangyang.editor.advanced-view";
 function readStoredEditorView(fallback) {
   const stored = window.localStorage.getItem(ADVANCED_EDITOR_VIEW_KEY$1);
@@ -59741,11 +59752,57 @@ function id(prefix2) {
   return `${prefix2}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 function normalizeAgentSessions(value) {
-  if (!Array.isArray(value)) return [];
-  return value.filter((session) => {
+  const values = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
+  return values.filter((session) => {
     const candidate = session;
     return typeof candidate.id === "string" && typeof candidate.title === "string" && Array.isArray(candidate.messages) && typeof candidate.createdAt === "number" && typeof candidate.updatedAt === "number";
   });
+}
+function mergeAgentSessions(sessions) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const session of sessions) {
+    const existing = byId.get(session.id);
+    if (!existing || session.updatedAt >= existing.updatedAt) byId.set(session.id, session);
+  }
+  return [...byId.values()].sort((a, b2) => b2.updatedAt - a.updatedAt).slice(0, 50);
+}
+function padDatePart(value) {
+  return String(value).padStart(2, "0");
+}
+function sessionDatePath(session) {
+  const date4 = new Date(Number.isFinite(session.createdAt) ? session.createdAt : Date.now());
+  const safeDate = Number.isNaN(date4.getTime()) ? /* @__PURE__ */ new Date() : date4;
+  return [
+    String(safeDate.getFullYear()),
+    padDatePart(safeDate.getMonth() + 1),
+    padDatePart(safeDate.getDate())
+  ].join("/");
+}
+function safeSessionFileName(sessionId) {
+  return `${sessionId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`;
+}
+function projectAgentSessionPath(session) {
+  return `${PROJECT_AGENT_SESSIONS_ROOT}/${sessionDatePath(session)}/${safeSessionFileName(session.id)}`;
+}
+async function listProjectAgentSessionFiles(relativePath = PROJECT_AGENT_SESSIONS_ROOT, depth = 4) {
+  if (depth < 0) return [];
+  let listing;
+  try {
+    listing = await window.electronAPI.listDirectory(relativePath);
+  } catch {
+    return [];
+  }
+  const files = [];
+  for (const entry of listing.entries) {
+    if (entry.type === "file" && entry.name.toLowerCase().endsWith(".json")) {
+      files.push(entry.relativePath);
+      continue;
+    }
+    if (entry.type === "directory") {
+      files.push(...await listProjectAgentSessionFiles(entry.relativePath, depth - 1));
+    }
+  }
+  return files;
 }
 function readLegacyAgentSessions() {
   try {
@@ -59760,21 +59817,64 @@ function writeLegacyAgentSessions(sessions) {
   localStorage.setItem(AGENT_SESSIONS_KEY, JSON.stringify(sessions.slice(0, 50)));
 }
 async function readProjectAgentSessions() {
+  const sessions = [];
+  const sessionFiles = await listProjectAgentSessionFiles();
+  for (const sessionFile of sessionFiles) {
+    try {
+      const raw = await window.electronAPI.readFile(sessionFile);
+      sessions.push(...normalizeAgentSessions(JSON.parse(raw)));
+    } catch {
+    }
+  }
+  let legacySessions = [];
   try {
     const raw = await window.electronAPI.readFile(PROJECT_AGENT_SESSIONS_PATH);
-    return normalizeAgentSessions(JSON.parse(raw));
+    legacySessions = normalizeAgentSessions(JSON.parse(raw));
   } catch {
-    return [];
+    legacySessions = [];
+  }
+  const merged = mergeAgentSessions([...sessions, ...legacySessions]);
+  if (legacySessions.length) void persistProjectAgentSessions(merged);
+  return merged;
+}
+async function persistProjectAgentSessions(sessions) {
+  const capped = mergeAgentSessions(sessions);
+  for (const session of capped) {
+    await window.electronAPI.writeFile(projectAgentSessionPath(session), `${JSON.stringify(session, null, 2)}
+`);
+  }
+  try {
+    await window.electronAPI.deleteEntry(PROJECT_AGENT_SESSIONS_PATH);
+  } catch {
+  }
+}
+async function removeProjectAgentSessionFiles(sessionId) {
+  const targetName = safeSessionFileName(sessionId);
+  const files = await listProjectAgentSessionFiles();
+  for (const file of files) {
+    if (file.split("/").pop() !== targetName) continue;
+    try {
+      await window.electronAPI.deleteEntry(file);
+    } catch {
+    }
+  }
+}
+async function clearProjectAgentSessionFiles() {
+  try {
+    await window.electronAPI.deleteEntry(PROJECT_AGENT_SESSIONS_ROOT);
+  } catch {
+  }
+  try {
+    await window.electronAPI.deleteEntry(PROJECT_AGENT_SESSIONS_PATH);
+  } catch {
   }
 }
 function persistAgentSessions(sessions, hasProjectRoot) {
-  const serialized = `${JSON.stringify(sessions.slice(0, 50), null, 2)}
-`;
   if (!hasProjectRoot) {
     writeLegacyAgentSessions(sessions);
     return;
   }
-  void window.electronAPI.writeFile(PROJECT_AGENT_SESSIONS_PATH, serialized);
+  void persistProjectAgentSessions(sessions);
 }
 function readSubAgentSessions() {
   try {
@@ -59914,8 +60014,42 @@ function upsertAgentSession(sessions, sessionId, messages2, mode) {
   };
   return [nextSession, ...sessions.filter((session) => session.id !== sessionId)].slice(0, 50);
 }
+function latestRestorableAgentSession(sessions) {
+  return [...sessions].filter((session) => session.messages.some((message2) => message2.role !== "system")).sort((left, right) => right.updatedAt - left.updatedAt)[0];
+}
+function restoredAgentSessionState(sessions, fallbackMode) {
+  const latest = latestRestorableAgentSession(sessions);
+  if (!latest) {
+    return {
+      currentSessionId: id("session"),
+      agentMode: fallbackMode,
+      messages: []
+    };
+  }
+  return {
+    currentSessionId: latest.id,
+    agentMode: latest.mode,
+    messages: latest.messages
+  };
+}
 function hasActiveRun(state) {
   return state.isRunning || Boolean(state.abortController);
+}
+let pendingAgentSessionPersist;
+function scheduleAgentSessionPersist(getState, setState) {
+  if (pendingAgentSessionPersist) {
+    window.clearTimeout(pendingAgentSessionPersist);
+  }
+  pendingAgentSessionPersist = window.setTimeout(() => {
+    pendingAgentSessionPersist = void 0;
+    const state = getState();
+    const sessions = upsertAgentSession(state.agentSessions, state.currentSessionId, state.messages, state.agentMode);
+    if (sessions === state.agentSessions) return;
+    persistAgentSessions(sessions, Boolean(state.projectRoot));
+    setState(
+      state.projectRoot ? { agentSessions: sessions } : { agentSessions: sessions, legacyAgentSessions: sessions }
+    );
+  }, 500);
 }
 function createSystemMessage(state) {
   return {
@@ -59978,11 +60112,12 @@ async function buildProjectContextBlock(state) {
   if (!state.projectRoot || !state.localSettings) return "";
   const settings = state.localSettings.promptContext;
   const maxFiles = Math.max(1, Math.min(100, settings.maxContextFiles || 1));
+  const configuredContextWindow = Math.max(6e3, settings.maxContextWindowLimit || 128e3);
   const maxTotalChars = Math.min(
-    5e4,
-    Math.max(6e3, Math.floor(settings.maxContextWindowLimit * settings.autoSummaryThresholdPercent / 100))
+    configuredContextWindow,
+    Math.max(6e3, Math.floor(configuredContextWindow * settings.autoSummaryThresholdPercent / 100))
   );
-  const maxPerFile = Math.max(1200, Math.min(6e3, Math.floor(maxTotalChars / Math.max(1, maxFiles))));
+  const maxPerFile = Math.max(1200, Math.min(32e3, Math.ceil(maxTotalChars / Math.max(1, maxFiles))));
   const sources = [];
   const seen = /* @__PURE__ */ new Set();
   let usedChars = 0;
@@ -60139,6 +60274,7 @@ const useAppStore = create((set2, get2) => ({
     const snapshot = await window.electronAPI.getAppSnapshot();
     const agentSessions = snapshot.projectRoot ? await readProjectAgentSessions() : readLegacyAgentSessions();
     const subAgentSessions = snapshot.projectRoot ? await readProjectSubAgentSessions() : readSubAgentSessions();
+    const restoredAgentSession = restoredAgentSessionState(agentSessions, "professional");
     set2({
       initialized: true,
       projectRoot: snapshot.projectRoot,
@@ -60148,6 +60284,7 @@ const useAppStore = create((set2, get2) => ({
       agentSessions,
       legacyAgentSessions: readLegacyAgentSessions(),
       subAgentSessions,
+      ...restoredAgentSession,
       selectedModel: pickRuntimeModel(snapshot.aiConfig, snapshot.aiConfig.scenario.agent)
     });
     if (snapshot.projectRoot) {
@@ -60159,17 +60296,17 @@ const useAppStore = create((set2, get2) => ({
     const snapshot = await window.electronAPI.setProjectRoot(root2);
     const agentSessions = snapshot.projectRoot ? await readProjectAgentSessions() : readLegacyAgentSessions();
     const subAgentSessions = snapshot.projectRoot ? await readProjectSubAgentSessions() : readSubAgentSessions();
+    const restoredAgentSession = restoredAgentSessionState(agentSessions, "professional");
     set2({
       projectRoot: snapshot.projectRoot,
       aiConfig: snapshot.aiConfig,
       agentSessions,
       subAgentSessions,
-      currentSessionId: id("session"),
+      ...restoredAgentSession,
       selectedModel: pickRuntimeModel(snapshot.aiConfig, snapshot.aiConfig.scenario.agent),
       activeFilePath: void 0,
       editorContent: "",
       editorDirty: false,
-      messages: [],
       draft: "",
       error: void 0
     });
@@ -60179,17 +60316,17 @@ const useAppStore = create((set2, get2) => ({
     const snapshot = await window.electronAPI.openProject(projectId);
     const agentSessions = snapshot.projectRoot ? await readProjectAgentSessions() : readLegacyAgentSessions();
     const subAgentSessions = snapshot.projectRoot ? await readProjectSubAgentSessions() : readSubAgentSessions();
+    const restoredAgentSession = restoredAgentSessionState(agentSessions, "professional");
     set2({
       projectRoot: snapshot.projectRoot,
       aiConfig: snapshot.aiConfig,
       agentSessions,
       subAgentSessions,
-      currentSessionId: id("session"),
+      ...restoredAgentSession,
       selectedModel: pickRuntimeModel(snapshot.aiConfig, snapshot.aiConfig.scenario.agent),
       activeFilePath: void 0,
       editorContent: "",
       editorDirty: false,
-      messages: [],
       draft: "",
       error: void 0
     });
@@ -60349,6 +60486,7 @@ const useAppStore = create((set2, get2) => ({
     if (hasActiveRun(state)) return;
     const sessions = state.agentSessions.filter((session) => session.id !== sessionId);
     persistAgentSessions(sessions, Boolean(state.projectRoot));
+    if (state.projectRoot) void removeProjectAgentSessionFiles(sessionId);
     set2((current) => ({
       agentSessions: sessions,
       currentSessionId: current.currentSessionId === sessionId ? id("session") : current.currentSessionId,
@@ -60359,6 +60497,7 @@ const useAppStore = create((set2, get2) => ({
     const state = get2();
     if (hasActiveRun(state)) return;
     persistAgentSessions([], Boolean(state.projectRoot));
+    if (state.projectRoot) void clearProjectAgentSessionFiles();
     set2({ agentSessions: [], currentSessionId: id("session"), messages: [], draft: "" });
   },
   deleteLegacyAgentSession: (sessionId) => {
@@ -60591,6 +60730,7 @@ ${contextBlock}`;
       const currentMessages = state.messages.length ? [systemMessage, ...state.messages.filter((message2) => message2.role !== "system")] : [systemMessage];
       const initialMessages = [...currentMessages, userMessage];
       set2({ messages: initialMessages });
+      scheduleAgentSessionPersist(get2, set2);
       const runtimeModelId = pickRuntimeModel(state.aiConfig, options?.modelId ?? state.selectedModel);
       const subAgentModelOverrides = options?.subAgentModelOverrides ?? {};
       const tools = await createToolRegistry(window.electronAPI, {
@@ -60626,6 +60766,7 @@ ${contextBlock}`;
             createdAt: Date.now()
           };
           set2({ messages: [...get2().messages, assistantMessage] });
+          scheduleAgentSessionPersist(get2, set2);
         }
         if (event.type === "text-delta" && event.messageId && event.text) {
           set2({
@@ -60633,9 +60774,11 @@ ${contextBlock}`;
               (message2) => message2.id === event.messageId ? { ...message2, content: `${message2.content}${event.text}` } : message2
             )
           });
+          scheduleAgentSessionPersist(get2, set2);
         }
         if (event.type === "tool-call" && event.messageId && event.toolCall) {
           set2({ messages: upsertAssistantToolCall(get2().messages, event.messageId, event.toolCall) });
+          scheduleAgentSessionPersist(get2, set2);
         }
         if (event.type === "tool-result" && event.toolResult) {
           set2({
@@ -60650,15 +60793,18 @@ ${contextBlock}`;
               }
             ]
           });
+          scheduleAgentSessionPersist(get2, set2);
         }
         if (event.type === "error") {
           runError = event.error ?? "Agent failed.";
           set2({ error: runError, messages: upsertAssistantErrorMessage(get2().messages, runError) });
+          scheduleAgentSessionPersist(get2, set2);
         }
       }
     } catch (error) {
       runError = error instanceof Error ? error.message : String(error);
       set2({ error: runError, messages: upsertAssistantErrorMessage(get2().messages, runError) });
+      scheduleAgentSessionPersist(get2, set2);
     } finally {
       const finalState = get2();
       if (finalState.currentSessionId === runSessionId) {
@@ -60797,6 +60943,45 @@ function runtimeModelStatus(config, modelId) {
     isReady: Boolean(config && isConfiguredRuntimeModel(config, modelId))
   };
 }
+function formatContextCapacity(tokens) {
+  if (tokens >= 1e3) return `${Math.round(tokens / 1e3)}k`;
+  return String(tokens);
+}
+const contextCapacityPresets = [
+  {
+    id: "full",
+    label: "最大上下文",
+    description: "尽量保留更多项目上下文，适合长任务。",
+    maxContextWindowLimit: 256e3,
+    autoSummaryThresholdPercent: 90,
+    maxContextFiles: 16
+  },
+  {
+    id: "balanced",
+    label: "自动压缩",
+    description: "默认平衡档，接近上限时自动收缩上下文。",
+    maxContextWindowLimit: 128e3,
+    autoSummaryThresholdPercent: 70,
+    maxContextFiles: 12
+  },
+  {
+    id: "compact",
+    label: "压缩上下文",
+    description: "减少携带文件和文本量，回复更稳更快。",
+    maxContextWindowLimit: 64e3,
+    autoSummaryThresholdPercent: 55,
+    maxContextFiles: 8
+  },
+  {
+    id: "minimal",
+    label: "极简上下文",
+    description: "只保留关键上下文，适合短问答或低容量模型。",
+    maxContextWindowLimit: 32e3,
+    autoSummaryThresholdPercent: 40,
+    maxContextFiles: 4
+  }
+];
+const legacyClampedBalancedContextLimit = 64e3;
 const contextOptions = [
   { value: "none", label: "无上下文", instruction: "" },
   {
@@ -61171,6 +61356,12 @@ function AgentWorkbench({ onCollapse }) {
   const activeRuntimeModelHasOverride = activeRuntimeModel !== defaultActiveRuntimeModel;
   const selectedModelMetadata = aiConfig?.modelMetadata[activeRuntimeModel];
   const activeRuntimeModelStatus = runtimeModelStatus(aiConfig, activeRuntimeModel);
+  const configuredContextLimit = localSettings?.promptContext.maxContextWindowLimit ?? 128e3;
+  const activeModelContextLimit = selectedModelMetadata?.maxContextWindow ?? configuredContextLimit;
+  const effectiveContextLimit = configuredContextLimit;
+  const selectedContextCapacityPreset = contextCapacityPresets.find(
+    (preset) => preset.maxContextWindowLimit === configuredContextLimit && preset.autoSummaryThresholdPercent === localSettings?.promptContext.autoSummaryThresholdPercent && preset.maxContextFiles === localSettings?.promptContext.maxContextFiles
+  ) ?? contextCapacityPresets.find((preset) => preset.id === "balanced") ?? contextCapacityPresets[0];
   const manualSubAgentProfile = profileForSubAgentRole(subAgentRole);
   const manualSubAgentModel = runtimeModelForProfile(aiConfig, selectedModel, manualSubAgentProfile, modelOverrides);
   const manualSubAgentModelStatus = runtimeModelStatus(aiConfig, manualSubAgentModel);
@@ -61574,8 +61765,14 @@ ${userText}` : userText;
   };
   const importHistorySessions = async () => {
     if (isRunning || historyImporting) return;
-    const defaultDirectory = projectRoot ? `${projectRoot.replace(/[\\/]+$/, "")}/.wangyang` : void 0;
+    const defaultDirectory = projectRoot ? `${projectRoot.replace(/[\\/]+$/, "")}/.wangyang/sessions` : void 0;
     setHistoryImportNotice("");
+    if (projectRoot) {
+      try {
+        await window.electronAPI.createEntry(".wangyang/sessions", "directory");
+      } catch {
+      }
+    }
     const selected = await window.electronAPI.selectDirectory(defaultDirectory);
     if (!selected?.path) return;
     setHistoryImporting(true);
@@ -61623,6 +61820,17 @@ ${userText}` : userText;
       }
     });
   };
+  reactExports.useEffect(() => {
+    if (!localSettings) return;
+    const context = localSettings.promptContext;
+    const wasClampedBalancedPreset = context.maxContextWindowLimit === legacyClampedBalancedContextLimit && context.autoSummaryThresholdPercent === 70 && context.maxContextFiles === 12;
+    if (!wasClampedBalancedPreset) return;
+    updatePromptContext({ maxContextWindowLimit: 128e3 });
+  }, [
+    localSettings?.promptContext.autoSummaryThresholdPercent,
+    localSettings?.promptContext.maxContextFiles,
+    localSettings?.promptContext.maxContextWindowLimit
+  ]);
   const writeTodos = async (items) => {
     const normalized = items.map((item) => ({
       ...item,
@@ -61867,6 +62075,67 @@ ${scoped.map((item) => `- [${item.status === "completed" ? "x" : " "}] [${item.s
           },
           mode.value
         )) })
+      ] });
+    }
+    if (composerPanel === "capacity") {
+      return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "composer-popup capacity-popup", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("header", { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "上下文容量" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setComposerPanel("none"), children: /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 13 }) })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "capacity-current", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(Gauge, { size: 14 }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+            "当前上限 ",
+            formatContextCapacity(effectiveContextLimit),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("small", { children: [
+              "模型 ",
+              formatContextCapacity(activeModelContextLimit),
+              " / 设置 ",
+              formatContextCapacity(configuredContextLimit),
+              "/ 阈值 ",
+              localSettings?.promptContext.autoSummaryThresholdPercent ?? 70,
+              "%"
+            ] })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "popup-list", children: contextCapacityPresets.map((preset) => {
+          const isActive2 = localSettings?.promptContext.maxContextWindowLimit === preset.maxContextWindowLimit && localSettings?.promptContext.autoSummaryThresholdPercent === preset.autoSummaryThresholdPercent && localSettings?.promptContext.maxContextFiles === preset.maxContextFiles;
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "button",
+            {
+              className: isActive2 ? "active" : "",
+              disabled: !localSettings,
+              onClick: () => {
+                updatePromptContext({
+                  maxContextWindowLimit: preset.maxContextWindowLimit,
+                  autoSummaryThresholdPercent: preset.autoSummaryThresholdPercent,
+                  maxContextFiles: preset.maxContextFiles
+                });
+                setComposerPanel("none");
+              },
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(Gauge, { size: 14 }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("strong", { children: [
+                    preset.label,
+                    " · ",
+                    formatContextCapacity(preset.maxContextWindowLimit)
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("small", { children: [
+                    preset.description,
+                    " 阈值 ",
+                    preset.autoSummaryThresholdPercent,
+                    "% / 文件 ",
+                    preset.maxContextFiles
+                  ] })
+                ] }),
+                isActive2 ? /* @__PURE__ */ jsxRuntimeExports.jsx(Check, { size: 14 }) : null
+              ]
+            },
+            preset.id
+          );
+        }) })
       ] });
     }
     return null;
@@ -62484,6 +62753,18 @@ ${scoped.map((item) => `- [${item.status === "completed" ? "x" : " "}] [${item.s
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "context-line", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("select", { value: contextMode, onChange: (event) => setContextMode(event.target.value), children: contextOptions.map((option) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: option.value, disabled: option.value === "current-file" && !activeFilePath, children: option.label }, option.value)) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "button",
+              {
+                className: composerPanel === "capacity" ? "context-capacity-button active" : "context-capacity-button",
+                title: `上下文容量：${formatContextCapacity(effectiveContextLimit)}。当前档位：${selectedContextCapacityPreset.label}`,
+                onClick: () => setComposerPanel((panel) => panel === "capacity" ? "none" : "capacity"),
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(Gauge, { size: 12 }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: formatContextCapacity(effectiveContextLimit) })
+                ]
+              }
+            ),
             activeFilePath ? /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { title: activeFilePath, onClick: () => setContextMode("current-file"), children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx(FileText, { size: 13 }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: activeFilePath })
@@ -83999,7 +84280,7 @@ const fallbackLocalSettings = {
     agentToolPermissionMode: "request",
     responseStylePreset: "wangyang-roast",
     autoSummaryThresholdPercent: 70,
-    maxContextWindowLimit: 64e3,
+    maxContextWindowLimit: 128e3,
     defaultAssistedPrompt: "请根据当前上下文辅助我继续创作，并给出可直接采用的修改建议。",
     defaultSelectedPromptId: "",
     prompts: [
@@ -84958,7 +85239,7 @@ function SettingsModal({ open: open2, onClose }) {
             max: 256e3,
             step: 1024,
             value: draftSettings.promptContext.maxContextWindowLimit,
-            onChange: (value) => updateSettingsSection("promptContext", { maxContextWindowLimit: Number(value ?? 64e3) })
+            onChange: (value) => updateSettingsSection("promptContext", { maxContextWindowLimit: Number(value ?? 128e3) })
           }
         )
       ] }),
