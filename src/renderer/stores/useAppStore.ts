@@ -72,6 +72,7 @@ interface AppState {
   startNewAgentSession: () => void
   loadAgentSession: (sessionId: string) => void
   loadLegacyAgentSession: (sessionId: string) => void
+  importAgentSessions: (sessions: AgentSession[]) => number
   renameAgentSession: (sessionId: string, title: string) => void
   deleteAgentSession: (sessionId: string) => void
   clearAgentSessions: () => void
@@ -803,6 +804,38 @@ export const useAppStore = create<AppState>((set, get) => ({
       draft: '',
       error: undefined
     })
+  },
+
+  importAgentSessions: (sessions) => {
+    const state = get()
+    if (hasActiveRun(state)) return 0
+    const imported = normalizeAgentSessions(sessions)
+    if (!imported.length) return 0
+
+    const currentSessions = state.projectRoot ? state.agentSessions : state.legacyAgentSessions
+    const knownIds = new Set(currentSessions.map((session) => session.id))
+    const now = Date.now()
+    const normalized = imported.map((session, index) => {
+      const nextId = knownIds.has(session.id) ? id('imported_session') : session.id
+      knownIds.add(nextId)
+      return {
+        ...session,
+        id: nextId,
+        title: session.title?.trim() || sessionTitle(session.messages),
+        updatedAt: now - index
+      }
+    })
+    const merged = [...normalized, ...currentSessions].slice(0, 50)
+
+    if (state.projectRoot) {
+      persistAgentSessions(merged, true)
+      set({ agentSessions: merged })
+    } else {
+      writeLegacyAgentSessions(merged)
+      set({ legacyAgentSessions: merged })
+    }
+
+    return normalized.length
   },
 
   renameAgentSession: (sessionId, title) => {

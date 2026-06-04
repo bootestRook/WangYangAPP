@@ -39,10 +39,20 @@ import { callMcpTool, closeAllMcpClients, listMcpTools } from './mcp/mcpService'
 import { fetchUrlContent } from './network/fetchUrlContent'
 import { jsonStore } from './store'
 import { IPC } from '../shared/ipc'
-import type { AiConfig, LocalSettings, McpConfig, ModelInterfaceConfig, ProjectConfig, ProjectCreateInput, SubAgentSession } from '../shared/types'
+import type {
+  AgentSession,
+  AiConfig,
+  LocalSettings,
+  McpConfig,
+  ModelInterfaceConfig,
+  ProjectConfig,
+  ProjectCreateInput,
+  SubAgentSession
+} from '../shared/types'
 
 const TEXT_IMPORT_EXTENSIONS = new Set(['.txt', '.md', '.markdown', '.html', '.htm'])
 const MAX_TEXT_IMPORT_BYTES = 20 * 1024 * 1024
+const AGENT_SESSIONS_FILE_NAME = 'agent-sessions.json'
 
 function uniqueStrings(values: string[]): string[] {
   return values.filter((value, index, all) => value && all.indexOf(value) === index)
@@ -102,6 +112,42 @@ async function listRemoteProviderModels(provider: ModelInterfaceConfig): Promise
     }
   }
   throw new Error(lastError || '加载模型失败')
+}
+
+function normalizeImportedAgentSessions(value: unknown): AgentSession[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((session): session is AgentSession => {
+    const candidate = session as Partial<AgentSession>
+    return (
+      typeof candidate.id === 'string' &&
+      typeof candidate.title === 'string' &&
+      ['professional', 'planning', 'writing', 'adventure'].includes(String(candidate.mode)) &&
+      Array.isArray(candidate.messages) &&
+      typeof candidate.createdAt === 'number' &&
+      typeof candidate.updatedAt === 'number'
+    )
+  })
+}
+
+async function readAgentSessionsFromDirectory(directoryPath: string): Promise<{ path: string; sessions: AgentSession[] }> {
+  const resolved = path.resolve(directoryPath)
+  const candidates = [
+    path.join(resolved, AGENT_SESSIONS_FILE_NAME),
+    path.join(resolved, '.wangyang', AGENT_SESSIONS_FILE_NAME)
+  ]
+
+  for (const candidate of candidates) {
+    try {
+      const raw = await readExternalFile(candidate, 'utf8')
+      const sessions = normalizeImportedAgentSessions(JSON.parse(raw))
+      if (!sessions.length) throw new Error('No valid sessions found.')
+      return { path: candidate, sessions }
+    } catch {
+      // Try the next conventional history location.
+    }
+  }
+
+  throw new Error('未找到可导入的历史会话文件。请选择包含 agent-sessions.json 的文件夹，或项目根目录。')
 }
 const IMAGE_PREVIEW_MIME: Record<string, string> = {
   '.png': 'image/png',
@@ -320,6 +366,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.searchFiles, async (_event, query: string, limit?: number) => {
     const snapshot = await jsonStore.snapshot()
     return searchProjectFiles(snapshot.projectRoot, query, limit)
+  })
+
+  ipcMain.handle(IPC.importAgentSessionsFromDirectory, async (_event, directoryPath: string) => {
+    return readAgentSessionsFromDirectory(directoryPath)
   })
 
   ipcMain.handle(IPC.openTextFile, async (event) => {

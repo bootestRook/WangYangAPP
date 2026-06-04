@@ -2908,6 +2908,7 @@ const IPC = {
   moveEntry: "project:move-entry",
   searchInFiles: "project:search-in-files",
   searchFiles: "project:search-files",
+  importAgentSessionsFromDirectory: "dialog:import-agent-sessions-from-directory",
   openTextFile: "dialog:open-text-file",
   saveTextFile: "dialog:save-text-file",
   saveBinaryFile: "dialog:save-binary-file",
@@ -2942,6 +2943,7 @@ const IPC = {
 };
 const TEXT_IMPORT_EXTENSIONS = /* @__PURE__ */ new Set([".txt", ".md", ".markdown", ".html", ".htm"]);
 const MAX_TEXT_IMPORT_BYTES = 20 * 1024 * 1024;
+const AGENT_SESSIONS_FILE_NAME = "agent-sessions.json";
 function uniqueStrings(values) {
   return values.filter((value, index, all) => value && all.indexOf(value) === index);
 }
@@ -2993,6 +2995,30 @@ async function listRemoteProviderModels(provider) {
     }
   }
   throw new Error(lastError || "加载模型失败");
+}
+function normalizeImportedAgentSessions(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((session) => {
+    const candidate = session;
+    return typeof candidate.id === "string" && typeof candidate.title === "string" && ["professional", "planning", "writing", "adventure"].includes(String(candidate.mode)) && Array.isArray(candidate.messages) && typeof candidate.createdAt === "number" && typeof candidate.updatedAt === "number";
+  });
+}
+async function readAgentSessionsFromDirectory(directoryPath) {
+  const resolved = path.resolve(directoryPath);
+  const candidates = [
+    path.join(resolved, AGENT_SESSIONS_FILE_NAME),
+    path.join(resolved, ".wangyang", AGENT_SESSIONS_FILE_NAME)
+  ];
+  for (const candidate of candidates) {
+    try {
+      const raw = await promises.readFile(candidate, "utf8");
+      const sessions = normalizeImportedAgentSessions(JSON.parse(raw));
+      if (!sessions.length) throw new Error("No valid sessions found.");
+      return { path: candidate, sessions };
+    } catch {
+    }
+  }
+  throw new Error("未找到可导入的历史会话文件。请选择包含 agent-sessions.json 的文件夹，或项目根目录。");
 }
 const IMAGE_PREVIEW_MIME = {
   ".png": "image/png",
@@ -3167,6 +3193,9 @@ function registerIpcHandlers() {
   electron.ipcMain.handle(IPC.searchFiles, async (_event, query, limit) => {
     const snapshot = await jsonStore.snapshot();
     return searchProjectFiles(snapshot.projectRoot, query, limit);
+  });
+  electron.ipcMain.handle(IPC.importAgentSessionsFromDirectory, async (_event, directoryPath) => {
+    return readAgentSessionsFromDirectory(directoryPath);
   });
   electron.ipcMain.handle(IPC.openTextFile, async (event) => {
     const window = electron.BrowserWindow.fromWebContents(event.sender);

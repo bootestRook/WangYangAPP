@@ -1,5 +1,4 @@
 import {
-  AtSign,
   BookOpen,
   Bot,
   Box,
@@ -7,6 +6,7 @@ import {
   Check,
   ChevronDown,
   Clock3,
+  Download,
   Eye,
   FileText,
   Image as ImageIcon,
@@ -25,10 +25,11 @@ import {
   Sparkles,
   Square,
   Trash2,
+  Upload,
   Wrench,
   X
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
 import { displayModelId, displayProviderId } from '../../core/models/modelDisplay'
 import { isConfiguredRuntimeModel, normalizeKnownModelAlias, pickRuntimeModel } from '../../core/models/modelConfig'
 import type {
@@ -127,6 +128,12 @@ type TodoItem = {
   markdownPath?: string
   createdAt: number
   updatedAt: number
+}
+type TextFileAttachment = {
+  id: string
+  name: string
+  size: number
+  content: string
 }
 
 const AGENT_MODEL_OVERRIDES_KEY = 'wangyang.agent.modelOverrides'
@@ -352,6 +359,9 @@ function configuredPromptItems(prompts: PromptTemplate[], defaultSelectedPromptI
 const maxImageAttachments = 4
 const maxImageAttachmentBytes = 5 * 1024 * 1024
 const allowedImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+const maxDroppedTextFileBytes = 2 * 1024 * 1024
+const maxDroppedTextChars = 120000
+const allowedDroppedTextExtensions = new Set(['.txt', '.md', '.markdown', '.html', '.htm'])
 
 const agentProfiles: Record<
   AgentProfileId,
@@ -446,6 +456,20 @@ function readImageAsDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error ?? new Error('读取图片失败'))
     reader.readAsDataURL(file)
   })
+}
+
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error ?? new Error('读取文件失败'))
+    reader.readAsText(file)
+  })
+}
+
+function extensionFromFileName(fileName: string): string {
+  const index = fileName.lastIndexOf('.')
+  return index >= 0 ? fileName.slice(index).toLowerCase() : ''
 }
 
 function timestampAgentName(): string {
@@ -544,6 +568,7 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
   const startNewAgentSession = useAppStore((state) => state.startNewAgentSession)
   const loadAgentSession = useAppStore((state) => state.loadAgentSession)
   const loadLegacyAgentSession = useAppStore((state) => state.loadLegacyAgentSession)
+  const importAgentSessions = useAppStore((state) => state.importAgentSessions)
   const renameAgentSession = useAppStore((state) => state.renameAgentSession)
   const deleteAgentSession = useAppStore((state) => state.deleteAgentSession)
   const clearAgentSessions = useAppStore((state) => state.clearAgentSessions)
@@ -577,11 +602,15 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('balanced')
   const [attachments, setAttachments] = useState<ProjectEntry[]>([])
   const [fileSearchQuery, setFileSearchQuery] = useState('')
+  const [mentionSearchOpen, setMentionSearchOpen] = useState(false)
   const [fileCandidates, setFileCandidates] = useState<ProjectEntry[]>([])
   const [fileLoading, setFileLoading] = useState(false)
   const [imageAttachments, setImageAttachments] = useState<ChatAttachment[]>([])
+  const [textFileAttachments, setTextFileAttachments] = useState<TextFileAttachment[]>([])
   const [attachmentError, setAttachmentError] = useState<string>()
   const [historyTab, setHistoryTab] = useState<'current' | 'legacy'>('current')
+  const [historyImporting, setHistoryImporting] = useState(false)
+  const [historyImportNotice, setHistoryImportNotice] = useState('')
   const [previewSessionId, setPreviewSessionId] = useState<string>()
   const [renameSessionId, setRenameSessionId] = useState<string>()
   const [renameTitle, setRenameTitle] = useState('')
@@ -589,6 +618,7 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
   const [selectedAgentId, setSelectedAgentId] = useState<AgentProfileId>('main')
   const [modelOverrides, setModelOverrides] = useState<AgentModelOverrides>(readAgentModelOverrides)
   const [agentTemperature, setAgentTemperature] = useState(0.2)
+  const [isComposerDragOver, setIsComposerDragOver] = useState(false)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const agentScrollRef = useRef<HTMLDivElement>(null)
   const userMessageRefs = useRef<Record<string, HTMLElement | null>>({})
@@ -789,6 +819,30 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
     setComposerPanel('none')
   }
 
+  const importTextFileToDraft = async (): Promise<void> => {
+    try {
+      const file = await window.electronAPI.openTextFile()
+      if (!file) return
+      setTextFileAttachments((current) =>
+        [
+          ...current,
+          {
+            id: `text_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            name: file.name,
+            size: file.content.length,
+            content: file.content
+          }
+        ].slice(0, 12)
+      )
+      if (draft.endsWith('@')) setDraft(draft.slice(0, -1))
+      setComposerPanel('none')
+      setMentionSearchOpen(false)
+      setAttachmentError(undefined)
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : '打开文件失败')
+    }
+  }
+
   const removeAttachment = (relativePath: string): void => {
     setAttachments((current) => current.filter((entry) => entry.relativePath !== relativePath))
   }
@@ -797,7 +851,11 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
     setImageAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId))
   }
 
-  const addImageFiles = async (files: FileList | null): Promise<void> => {
+  const removeTextFileAttachment = (attachmentId: string): void => {
+    setTextFileAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId))
+  }
+
+  const addImageFiles = async (files: FileList | File[] | null): Promise<void> => {
     if (!files?.length) return
     setAttachmentError(undefined)
     const selected = [...files]
@@ -836,8 +894,57 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
     }
   }
 
+  const appendDroppedTextFiles = async (files: File[]): Promise<void> => {
+    if (!files.length) return
+    const accepted: TextFileAttachment[] = []
+
+    for (const file of files) {
+      const extension = extensionFromFileName(file.name)
+      if (!allowedDroppedTextExtensions.has(extension)) {
+        setAttachmentError('仅支持拖入图片、TXT、Markdown 或 HTML 文件。')
+        continue
+      }
+      if (file.size > maxDroppedTextFileBytes) {
+        setAttachmentError(`文本文件不能超过 ${(maxDroppedTextFileBytes / 1024 / 1024).toFixed(0)}MB。`)
+        continue
+      }
+
+      const raw = await readFileAsText(file)
+      accepted.push({
+        id: `text_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        name: file.name,
+        size: file.size,
+        content: raw
+      })
+    }
+
+    if (!accepted.length) return
+    setTextFileAttachments((current) => [...current, ...accepted].slice(0, 12))
+    setComposerPanel('none')
+    setAttachmentError(undefined)
+  }
+
+  const handleComposerDrop = async (event: ReactDragEvent<HTMLElement>): Promise<void> => {
+    event.preventDefault()
+    event.stopPropagation()
+    setIsComposerDragOver(false)
+
+    const files = [...(event.dataTransfer.files ?? [])]
+    if (!files.length) return
+
+    const imageFiles = files.filter((file) => allowedImageTypes.has(file.type))
+    const textFiles = files.filter((file) => !allowedImageTypes.has(file.type))
+
+    if (imageFiles.length) {
+      await addImageFiles(imageFiles)
+    }
+    await appendDroppedTextFiles(textFiles)
+  }
+
   const composeOutgoingDraft = (): string => {
-    const userText = draft.trim() || (imageAttachments.length ? '请分析我附加的图片，并结合当前上下文回答。' : '')
+    const userText =
+      draft.trim() ||
+      (imageAttachments.length || textFileAttachments.length ? '请分析我附加的文件，并结合当前上下文回答。' : '')
     if (!userText) return ''
     const contextInstruction = contextOptions.find((option) => option.value === contextMode)?.instruction
     const blocks: string[] = [
@@ -863,6 +970,20 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
 
     if (attachments.length) {
       blocks.push(`请优先参考这些项目文件或目录：\n${attachments.map((entry) => `- ${entry.relativePath}`).join('\n')}`)
+    }
+
+    if (textFileAttachments.length) {
+      blocks.push(
+        `用户拖入/选择的本地文本文件：\n${textFileAttachments
+          .map((file) => {
+            const content =
+              file.content.length > maxDroppedTextChars
+                ? `${file.content.slice(0, maxDroppedTextChars)}\n\n[文件过长，已截取前 ${maxDroppedTextChars.toLocaleString('zh-CN')} 字。]`
+                : file.content
+            return `## ${file.name}\n\n\`\`\`\n${content}\n\`\`\``
+          })
+          .join('\n\n')}`
+      )
     }
 
     if (thinkingOption.instruction) {
@@ -891,6 +1012,7 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
       setComposerPanel('none')
       setAttachments([])
       setImageAttachments([])
+      setTextFileAttachments([])
       setAttachmentError(undefined)
       setShowSubAgents(true)
       await runSubAgent(selectedAgentProfile.subAgentRole, nextDraft, imageAttachments, agentTemperature, undefined, {
@@ -902,6 +1024,7 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
     setComposerPanel('none')
     setAttachments([])
     setImageAttachments([])
+    setTextFileAttachments([])
     setAttachmentError(undefined)
     await sendMessage(imageAttachments, agentTemperature, {
       modelId: activeRuntimeModel,
@@ -967,6 +1090,50 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
     setRenameSessionId(undefined)
   }
 
+  const importHistorySessions = async (): Promise<void> => {
+    if (isRunning || historyImporting) return
+    const defaultDirectory = projectRoot ? `${projectRoot.replace(/[\\/]+$/, '')}/.wangyang` : undefined
+    setHistoryImportNotice('')
+
+    const selected = await window.electronAPI.selectDirectory(defaultDirectory)
+    if (!selected?.path) return
+
+    setHistoryImporting(true)
+    try {
+      const imported = await window.electronAPI.importAgentSessionsFromDirectory(selected.path)
+      const count = importAgentSessions(imported.sessions)
+      if (!count) {
+        setHistoryImportNotice('没有可导入的历史会话。')
+        return
+      }
+      setHistoryTab(projectRoot ? 'current' : 'legacy')
+      setPreviewSessionId(undefined)
+      setHistoryImportNotice(`已导入 ${count} 条历史会话。来源：${imported.path}`)
+    } catch (error) {
+      setHistoryImportNotice(error instanceof Error ? error.message : '导入历史会话失败')
+    } finally {
+      setHistoryImporting(false)
+    }
+  }
+
+  const exportHistorySessions = async (): Promise<void> => {
+    if (!historySessions.length) {
+      setHistoryImportNotice('没有可导出的历史会话。')
+      return
+    }
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
+    const prefix = historyTab === 'current' ? 'agent-sessions' : 'legacy-agent-sessions'
+    try {
+      const saved = await window.electronAPI.saveTextFile(
+        `${prefix}-${stamp}.json`,
+        `${JSON.stringify(historySessions, null, 2)}\n`
+      )
+      if (saved?.path) setHistoryImportNotice(`已导出 ${historySessions.length} 条历史会话：${saved.path}`)
+    } catch (error) {
+      setHistoryImportNotice(error instanceof Error ? error.message : '导出历史会话失败')
+    }
+  }
+
   const updatePromptContext = (patch: Partial<NonNullable<typeof localSettings>['promptContext']>): void => {
     if (!localSettings) return
     void saveLocalSettings({
@@ -1022,7 +1189,7 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
   }
 
   useEffect(() => {
-    if (composerPanel !== 'mention') return
+    if (composerPanel !== 'mention' || !mentionSearchOpen) return
     let alive = true
     setFileLoading(true)
     const query = fileSearchQuery.trim()
@@ -1043,7 +1210,7 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
     return () => {
       alive = false
     }
-  }, [composerPanel, fileSearchQuery])
+  }, [composerPanel, fileSearchQuery, mentionSearchOpen])
 
   useEffect(() => {
     const solution = agentSolutions.find((item) => item.mode === agentMode)
@@ -1057,34 +1224,79 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
   const renderComposerPanel = () => {
     if (composerPanel === 'mention') {
       return (
-        <div className="composer-popup mention-popup">
+        <div className="composer-popup mention-popup file-menu-popup">
           <header>
-            <strong>引用项目文件</strong>
-            <button onClick={() => setComposerPanel('none')}>
+            <strong>添加照片和文件</strong>
+            <button
+              onClick={() => {
+                setComposerPanel('none')
+                setMentionSearchOpen(false)
+              }}
+            >
               <X size={13} />
             </button>
           </header>
-          <div className="popup-search">
-            <Search size={14} />
-            <input
-              value={fileSearchQuery}
-              placeholder="搜索文件或目录"
-              onChange={(event) => setFileSearchQuery(event.target.value)}
-            />
+          <div className="popup-list file-menu-actions">
+            <button onClick={() => void importTextFileToDraft()}>
+              <FileText size={15} />
+              <span>
+                <strong>打开文本文件</strong>
+                <small>TXT、Markdown、HTML 作为附件发送</small>
+              </span>
+            </button>
+            <button
+              disabled={!projectRoot}
+              onClick={() => {
+                setMentionSearchOpen((open) => !open)
+                setFileSearchQuery('')
+              }}
+            >
+              <Search size={15} />
+              <span>
+                <strong>搜索项目文件</strong>
+                <small>{projectRoot ? '引用项目内文件或目录' : '请先打开项目'}</small>
+              </span>
+            </button>
+            <button
+              onClick={() => {
+                imageInputRef.current?.click()
+                setComposerPanel('none')
+                setMentionSearchOpen(false)
+              }}
+            >
+              <ImageIcon size={15} />
+              <span>
+                <strong>添加图片文件</strong>
+                <small>PNG、JPEG、WebP、GIF</small>
+              </span>
+            </button>
           </div>
-          <div className="popup-list">
-            {fileLoading ? <p>正在读取...</p> : null}
-            {!fileLoading && fileCandidates.length
-              ? fileCandidates.map((entry) => (
-                  <button key={entry.relativePath} onClick={() => addAttachment(entry)}>
-                    {entry.type === 'directory' ? <BookOpen size={14} /> : <FileText size={14} />}
-                    <span>{entry.relativePath}</span>
-                    <em>{fileMeta(entry)}</em>
-                  </button>
-                ))
-              : null}
-            {!fileLoading && !fileCandidates.length ? <p>暂无匹配文件</p> : null}
-          </div>
+          {mentionSearchOpen ? (
+            <>
+              <div className="popup-search">
+                <Search size={14} />
+                <input
+                  autoFocus
+                  value={fileSearchQuery}
+                  placeholder="搜索项目文件或目录"
+                  onChange={(event) => setFileSearchQuery(event.target.value)}
+                />
+              </div>
+              <div className="popup-list file-search-results">
+                {fileLoading ? <p>正在读取...</p> : null}
+                {!fileLoading && fileCandidates.length
+                  ? fileCandidates.map((entry) => (
+                      <button key={entry.relativePath} onClick={() => addAttachment(entry)}>
+                        {entry.type === 'directory' ? <BookOpen size={14} /> : <FileText size={14} />}
+                        <span>{entry.relativePath}</span>
+                        <em>{fileMeta(entry)}</em>
+                      </button>
+                    ))
+                  : null}
+                {!fileLoading && !fileCandidates.length ? <p>暂无匹配文件</p> : null}
+              </div>
+            </>
+          ) : null}
         </div>
       )
     }
@@ -1424,6 +1636,14 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
             <header>
               <strong>历史会话</strong>
               <div>
+                <button disabled={isRunning || historyImporting} onClick={() => void importHistorySessions()}>
+                  <Upload size={13} />
+                  {historyImporting ? '导入中' : '导入'}
+                </button>
+                <button disabled={!historySessions.length} onClick={() => void exportHistorySessions()}>
+                  <Download size={13} />
+                  导出
+                </button>
                 <button disabled={isRunning || !historySessions.length} onClick={confirmClearSessions}>
                   <Trash2 size={13} />
                   清空
@@ -1443,6 +1663,8 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
                 旧版
               </button>
             </div>
+
+            {historyImportNotice ? <p className="history-import-notice">{historyImportNotice}</p> : null}
 
             {historySessions.length ? (
               historySessions.slice(0, 30).map((session) => (
@@ -1892,7 +2114,32 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
         )}
       </div>
 
-      <footer className="agent-composer">
+      <footer
+        className={isComposerDragOver ? 'agent-composer drag-over' : 'agent-composer'}
+        onDragEnter={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          if (event.dataTransfer.types.includes('Files')) setIsComposerDragOver(true)
+        }}
+        onDragOver={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          event.dataTransfer.dropEffect = 'copy'
+          if (event.dataTransfer.types.includes('Files')) setIsComposerDragOver(true)
+        }}
+        onDragLeave={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsComposerDragOver(false)
+        }}
+        onDrop={(event) => void handleComposerDrop(event)}
+      >
+        {isComposerDragOver ? (
+          <div className="composer-drop-overlay">
+            <Paperclip size={16} />
+            <span>松开以上传给智能体</span>
+          </div>
+        ) : null}
         {renderComposerPanel()}
 
         <div className="model-line">
@@ -1972,6 +2219,18 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
               <X size={11} />
             </button>
           ))}
+          {textFileAttachments.map((attachment) => (
+            <button
+              className="text-file-chip"
+              key={attachment.id}
+              title={attachment.name}
+              onClick={() => removeTextFileAttachment(attachment.id)}
+            >
+              <FileText size={12} />
+              <span>{attachment.name}</span>
+              <X size={11} />
+            </button>
+          ))}
           {attachmentError ? <span className="attachment-error">{attachmentError}</span> : null}
         </div>
 
@@ -1985,6 +2244,7 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
               setComposerPanel('slash')
             } else if (value.endsWith('@')) {
               setFileSearchQuery('')
+              setMentionSearchOpen(true)
               setComposerPanel('mention')
             }
           }}
@@ -2022,13 +2282,14 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
           </button>
           <button
             className={composerPanel === 'mention' ? 'square-tool active' : 'square-tool'}
-            title="引用文件"
+            title="添加照片和文件"
             onClick={() => {
               setFileSearchQuery('')
+              setMentionSearchOpen(false)
               setComposerPanel((panel) => (panel === 'mention' ? 'none' : 'mention'))
             }}
           >
-            <AtSign size={15} />
+            <Paperclip size={15} />
           </button>
           <button className="square-tool" title="添加图片" onClick={() => imageInputRef.current?.click()}>
             <ImageIcon size={15} />
@@ -2058,7 +2319,7 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
             className="send-round"
             disabled={
               !isRunning &&
-              ((!draft.trim() && !imageAttachments.length) || subAgentRunning)
+              ((!draft.trim() && !imageAttachments.length && !textFileAttachments.length) || subAgentRunning)
             }
             onClick={() => {
               if (isRunning) stopAgent()

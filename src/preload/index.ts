@@ -11,6 +11,7 @@ import type {
   McpToolInfo,
   ModelInterfaceConfig,
   AgentFileInfo,
+  AgentSession,
   ProjectConfig,
   ProjectCreateInput,
   ProjectInfo,
@@ -88,6 +89,8 @@ const api = {
     ipcRenderer.invoke(IPC.searchInFiles, query, limit),
   searchFiles: (query: string, limit?: number): Promise<ProjectEntry[]> =>
     ipcRenderer.invoke(IPC.searchFiles, query, limit),
+  importAgentSessionsFromDirectory: (directoryPath: string): Promise<{ path: string; sessions: AgentSession[] }> =>
+    ipcRenderer.invoke(IPC.importAgentSessionsFromDirectory, directoryPath),
   openTextFile: (): Promise<{ path: string; name: string; content: string } | undefined> =>
     ipcRenderer.invoke(IPC.openTextFile),
   saveTextFile: (defaultName: string, content: string): Promise<{ path: string } | undefined> =>

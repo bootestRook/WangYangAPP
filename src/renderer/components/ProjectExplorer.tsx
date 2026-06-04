@@ -756,6 +756,23 @@ export function ProjectExplorer({ isSidebarCollapsed = false, onToggleSidebar }:
     }
   }
 
+  const openExistingProject = async (): Promise<void> => {
+    const result = await window.electronAPI.selectDirectory(projectRoot || projectCreateDraft.parentPath || undefined)
+    if (!result?.path) return
+    const canSwitch = await ensureCanSwitchProject()
+    if (!canSwitch) return
+
+    try {
+      await setProjectRoot(result.path)
+      setRootDraft(result.path)
+      await refreshProjectList()
+      setProjectManagerOpen(false)
+      message.success(`已打开项目：${basename(result.path) || result.path}`)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '打开已有项目失败')
+    }
+  }
+
   const createProject = async (): Promise<void> => {
     const name = projectCreateDraft.name.trim()
     if (!name) {
@@ -2615,9 +2632,14 @@ export function ProjectExplorer({ isSidebarCollapsed = false, onToggleSidebar }:
           <section className="project-manager-list">
             <header>
               <h3>最近项目</h3>
-              <Button size="small" onClick={() => void refreshProjectList()}>
-                刷新
-              </Button>
+              <div className="project-manager-actions">
+                <Button size="small" type="primary" onClick={() => void openExistingProject()}>
+                  打开已有项目
+                </Button>
+                <Button size="small" onClick={() => void refreshProjectList()}>
+                  刷新
+                </Button>
+              </div>
             </header>
             <div className="project-list">
               {projects.map((project) => {

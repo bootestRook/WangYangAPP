@@ -3327,11 +3327,34 @@ pre {
   opacity: 0.62;
 }
 
+.history-panel > header {
+  min-width: 0;
+}
+
+.history-panel > header > strong {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.history-panel > header > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--wy-scrollbar-thumb) transparent;
+}
+
 .history-panel > header > div button {
+  flex: 0 0 auto;
   min-height: 28px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  white-space: nowrap;
 }
 
 .history-tabs {
@@ -3444,6 +3467,18 @@ pre {
   white-space: nowrap;
   font-style: normal;
   font-size: 12px;
+}
+
+.history-panel .history-import-notice {
+  padding: 7px 8px;
+  border: 1px solid var(--wy-border);
+  border-radius: 6px;
+  background: var(--wy-bg-secondary);
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
 
 .history-preview {
@@ -4010,6 +4045,28 @@ pre {
   background: #101010;
 }
 
+.agent-composer.drag-over {
+  border-top-color: var(--wy-primary-active);
+  background: rgba(91, 141, 239, 0.12);
+}
+
+.composer-drop-overlay {
+  position: absolute;
+  inset: 8px 12px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--wy-primary-active);
+  border-radius: 8px;
+  background: rgba(16, 22, 34, 0.88);
+  color: var(--wy-text);
+  font-size: 13px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
 .model-line {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 34px 20px minmax(78px, 0.55fr) 28px;
@@ -4115,6 +4172,11 @@ pre {
   background: #0d1a22;
 }
 
+.context-line .text-file-chip {
+  border-color: var(--wy-border);
+  background: var(--wy-bg-secondary);
+}
+
 .context-line .image-chip img {
   width: 16px;
   height: 16px;
@@ -4149,6 +4211,15 @@ pre {
   border-radius: 6px;
   background: #121212;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+}
+
+.file-menu-popup {
+  right: auto;
+  width: min(330px, calc(100% - 28px));
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  max-height: min(300px, calc(100vh - 300px));
+  gap: 6px;
+  overflow: hidden;
 }
 
 .composer-popup header {
@@ -4221,6 +4292,28 @@ pre {
   border-radius: 5px;
   color: var(--wy-text-secondary);
   text-align: left;
+}
+
+.file-menu-actions {
+  gap: 4px;
+}
+
+.file-menu-actions button {
+  min-height: 42px;
+  grid-template-columns: 20px minmax(0, 1fr);
+  border-color: transparent;
+  background: transparent;
+}
+
+.file-search-results {
+  max-height: 110px;
+  overflow: auto;
+  padding-top: 2px;
+}
+
+.file-search-results button {
+  min-height: 34px;
+  padding: 6px 8px;
 }
 
 .popup-list button:hover,
@@ -5006,6 +5099,16 @@ pre {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+}
+
+.project-manager-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .project-list {
@@ -7476,6 +7579,64 @@ button svg,
   background: rgba(91, 141, 239, 0.12) !important;
 }
 
+html body .file-menu-popup {
+  right: auto !important;
+  width: min(330px, calc(100% - 28px)) !important;
+  grid-template-rows: auto auto auto minmax(0, 1fr) !important;
+  max-height: min(300px, calc(100vh - 300px)) !important;
+  overflow: hidden !important;
+}
+
+html body .file-menu-actions button {
+  min-height: 42px !important;
+  grid-template-columns: 20px minmax(0, 1fr) !important;
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html body .file-menu-actions button:hover {
+  border-color: var(--wy-border) !important;
+  background: var(--wy-selected) !important;
+}
+
+html body .file-search-results {
+  max-height: 110px;
+  overflow: auto;
+}
+
+html body .file-search-results button {
+  min-height: 34px !important;
+  padding: 6px 8px !important;
+}
+
+/* History toolbar guard: actions scroll horizontally instead of wrapping. */
+html body .history-panel > header {
+  min-width: 0;
+}
+
+html body .history-panel > header > strong {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+html body .history-panel > header > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--wy-scrollbar-thumb) transparent;
+}
+
+html body .history-panel > header > div button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .agent-message.tool,
 .tool-call,
 .agent-process,
@@ -7898,4 +8059,33 @@ html body .permission-button span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Codex-like file menu: keep the composer attachment menu compact. */
+html body .file-menu-popup {
+  right: auto !important;
+  width: min(330px, calc(100% - 28px)) !important;
+  max-height: min(420px, calc(100vh - 260px)) !important;
+}
+
+html body .file-menu-actions button {
+  min-height: 42px !important;
+  grid-template-columns: 20px minmax(0, 1fr) !important;
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html body .file-menu-actions button:hover {
+  border-color: var(--wy-border) !important;
+  background: var(--wy-selected) !important;
+}
+
+html body .file-search-results {
+  max-height: 190px;
+}
+
+html body .file-search-results button {
+  min-height: 34px !important;
+  padding: 6px 8px !important;
 }

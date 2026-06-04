@@ -29,6 +29,7 @@ export const IPC = {
   moveEntry: 'project:move-entry',
   searchInFiles: 'project:search-in-files',
   searchFiles: 'project:search-files',
+  importAgentSessionsFromDirectory: 'dialog:import-agent-sessions-from-directory',
   openTextFile: 'dialog:open-text-file',
   saveTextFile: 'dialog:save-text-file',
   saveBinaryFile: 'dialog:save-binary-file',

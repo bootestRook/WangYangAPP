@@ -49608,16 +49608,6 @@ const createLucideIcon = (iconName, iconNode) => {
  * This source code is licensed under the ISC license.
  * See the LICENSE file in the root directory of this source tree.
  */
-const AtSign = createLucideIcon("AtSign", [
-  ["circle", { cx: "12", cy: "12", r: "4", key: "4exip2" }],
-  ["path", { d: "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8", key: "7n84p3" }]
-]);
-/**
- * @license lucide-react v0.468.0 - ISC
- *
- * This source code is licensed under the ISC license.
- * See the LICENSE file in the root directory of this source tree.
- */
 const Bold = createLucideIcon("Bold", [
   [
     "path",
@@ -49752,6 +49742,17 @@ const CodeXml = createLucideIcon("CodeXml", [
   ["path", { d: "m18 16 4-4-4-4", key: "1inbqp" }],
   ["path", { d: "m6 8-4 4 4 4", key: "15zrgr" }],
   ["path", { d: "m14.5 4-5 16", key: "e7oirm" }]
+]);
+/**
+ * @license lucide-react v0.468.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */
+const Download = createLucideIcon("Download", [
+  ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
+  ["polyline", { points: "7 10 12 15 17 10", key: "2ggqvy" }],
+  ["line", { x1: "12", x2: "12", y1: "15", y2: "3", key: "1vk2je" }]
 ]);
 /**
  * @license lucide-react v0.468.0 - ISC
@@ -50176,6 +50177,17 @@ const Trash2 = createLucideIcon("Trash2", [
 const Undo2 = createLucideIcon("Undo2", [
   ["path", { d: "M9 14 4 9l5-5", key: "102s5s" }],
   ["path", { d: "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11", key: "f3b9sd" }]
+]);
+/**
+ * @license lucide-react v0.468.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */
+const Upload = createLucideIcon("Upload", [
+  ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", key: "ih7n3h" }],
+  ["polyline", { points: "17 8 12 3 7 8", key: "t8dd8p" }],
+  ["line", { x1: "12", x2: "12", y1: "3", y2: "15", key: "widbto" }]
 ]);
 /**
  * @license lucide-react v0.468.0 - ISC
@@ -60293,6 +60305,34 @@ const useAppStore = create((set2, get2) => ({
       error: void 0
     });
   },
+  importAgentSessions: (sessions) => {
+    const state = get2();
+    if (hasActiveRun(state)) return 0;
+    const imported = normalizeAgentSessions(sessions);
+    if (!imported.length) return 0;
+    const currentSessions = state.projectRoot ? state.agentSessions : state.legacyAgentSessions;
+    const knownIds = new Set(currentSessions.map((session) => session.id));
+    const now2 = Date.now();
+    const normalized = imported.map((session, index2) => {
+      const nextId = knownIds.has(session.id) ? id("imported_session") : session.id;
+      knownIds.add(nextId);
+      return {
+        ...session,
+        id: nextId,
+        title: session.title?.trim() || sessionTitle(session.messages),
+        updatedAt: now2 - index2
+      };
+    });
+    const merged = [...normalized, ...currentSessions].slice(0, 50);
+    if (state.projectRoot) {
+      persistAgentSessions(merged, true);
+      set2({ agentSessions: merged });
+    } else {
+      writeLegacyAgentSessions(merged);
+      set2({ legacyAgentSessions: merged });
+    }
+    return normalized.length;
+  },
   renameAgentSession: (sessionId, title) => {
     const state = get2();
     if (hasActiveRun(state)) return;
@@ -60892,6 +60932,9 @@ function configuredPromptItems(prompts, defaultSelectedPromptId) {
 const maxImageAttachments = 4;
 const maxImageAttachmentBytes = 5 * 1024 * 1024;
 const allowedImageTypes = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const maxDroppedTextFileBytes = 2 * 1024 * 1024;
+const maxDroppedTextChars = 12e4;
+const allowedDroppedTextExtensions = /* @__PURE__ */ new Set([".txt", ".md", ".markdown", ".html", ".htm"]);
 const agentProfiles = {
   main: {
     label: "主智能体",
@@ -60971,6 +61014,18 @@ function readImageAsDataUrl(file) {
     reader.readAsDataURL(file);
   });
 }
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error("读取文件失败"));
+    reader.readAsText(file);
+  });
+}
+function extensionFromFileName(fileName2) {
+  const index2 = fileName2.lastIndexOf(".");
+  return index2 >= 0 ? fileName2.slice(index2).toLowerCase() : "";
+}
 function timestampAgentName() {
   return `智能体-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 19).replace(/[T:]/g, "-")}`;
 }
@@ -61040,6 +61095,7 @@ function AgentWorkbench({ onCollapse }) {
   const startNewAgentSession = useAppStore((state) => state.startNewAgentSession);
   const loadAgentSession = useAppStore((state) => state.loadAgentSession);
   const loadLegacyAgentSession = useAppStore((state) => state.loadLegacyAgentSession);
+  const importAgentSessions = useAppStore((state) => state.importAgentSessions);
   const renameAgentSession = useAppStore((state) => state.renameAgentSession);
   const deleteAgentSession = useAppStore((state) => state.deleteAgentSession);
   const clearAgentSessions = useAppStore((state) => state.clearAgentSessions);
@@ -61073,11 +61129,15 @@ function AgentWorkbench({ onCollapse }) {
   const [thinkingMode, setThinkingMode] = reactExports.useState("balanced");
   const [attachments, setAttachments] = reactExports.useState([]);
   const [fileSearchQuery, setFileSearchQuery] = reactExports.useState("");
+  const [mentionSearchOpen, setMentionSearchOpen] = reactExports.useState(false);
   const [fileCandidates, setFileCandidates] = reactExports.useState([]);
   const [fileLoading, setFileLoading] = reactExports.useState(false);
   const [imageAttachments, setImageAttachments] = reactExports.useState([]);
+  const [textFileAttachments, setTextFileAttachments] = reactExports.useState([]);
   const [attachmentError, setAttachmentError] = reactExports.useState();
   const [historyTab, setHistoryTab] = reactExports.useState("current");
+  const [historyImporting, setHistoryImporting] = reactExports.useState(false);
+  const [historyImportNotice, setHistoryImportNotice] = reactExports.useState("");
   const [previewSessionId, setPreviewSessionId] = reactExports.useState();
   const [renameSessionId, setRenameSessionId] = reactExports.useState();
   const [renameTitle, setRenameTitle] = reactExports.useState("");
@@ -61085,6 +61145,7 @@ function AgentWorkbench({ onCollapse }) {
   const [selectedAgentId, setSelectedAgentId] = reactExports.useState("main");
   const [modelOverrides, setModelOverrides] = reactExports.useState(readAgentModelOverrides);
   const [agentTemperature, setAgentTemperature] = reactExports.useState(0.2);
+  const [isComposerDragOver, setIsComposerDragOver] = reactExports.useState(false);
   const imageInputRef = reactExports.useRef(null);
   const agentScrollRef = reactExports.useRef(null);
   const userMessageRefs = reactExports.useRef({});
@@ -61265,11 +61326,37 @@ ${text}` : text);
     replaceTrailingTrigger("@", `@${entry.relativePath} `);
     setComposerPanel("none");
   };
+  const importTextFileToDraft = async () => {
+    try {
+      const file = await window.electronAPI.openTextFile();
+      if (!file) return;
+      setTextFileAttachments(
+        (current) => [
+          ...current,
+          {
+            id: `text_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            name: file.name,
+            size: file.content.length,
+            content: file.content
+          }
+        ].slice(0, 12)
+      );
+      if (draft.endsWith("@")) setDraft(draft.slice(0, -1));
+      setComposerPanel("none");
+      setMentionSearchOpen(false);
+      setAttachmentError(void 0);
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : "打开文件失败");
+    }
+  };
   const removeAttachment = (relativePath) => {
     setAttachments((current) => current.filter((entry) => entry.relativePath !== relativePath));
   };
   const removeImageAttachment = (attachmentId) => {
     setImageAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
+  };
+  const removeTextFileAttachment = (attachmentId) => {
+    setTextFileAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
   };
   const addImageFiles = async (files) => {
     if (!files?.length) return;
@@ -61307,8 +61394,47 @@ ${text}` : text);
       setImageAttachments((current) => [...current, ...accepted].slice(0, maxImageAttachments));
     }
   };
+  const appendDroppedTextFiles = async (files) => {
+    if (!files.length) return;
+    const accepted = [];
+    for (const file of files) {
+      const extension = extensionFromFileName(file.name);
+      if (!allowedDroppedTextExtensions.has(extension)) {
+        setAttachmentError("仅支持拖入图片、TXT、Markdown 或 HTML 文件。");
+        continue;
+      }
+      if (file.size > maxDroppedTextFileBytes) {
+        setAttachmentError(`文本文件不能超过 ${(maxDroppedTextFileBytes / 1024 / 1024).toFixed(0)}MB。`);
+        continue;
+      }
+      const raw = await readFileAsText(file);
+      accepted.push({
+        id: `text_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        name: file.name,
+        size: file.size,
+        content: raw
+      });
+    }
+    if (!accepted.length) return;
+    setTextFileAttachments((current) => [...current, ...accepted].slice(0, 12));
+    setComposerPanel("none");
+    setAttachmentError(void 0);
+  };
+  const handleComposerDrop = async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsComposerDragOver(false);
+    const files = [...event.dataTransfer.files ?? []];
+    if (!files.length) return;
+    const imageFiles = files.filter((file) => allowedImageTypes.has(file.type));
+    const textFiles = files.filter((file) => !allowedImageTypes.has(file.type));
+    if (imageFiles.length) {
+      await addImageFiles(imageFiles);
+    }
+    await appendDroppedTextFiles(textFiles);
+  };
   const composeOutgoingDraft = () => {
-    const userText = draft.trim() || (imageAttachments.length ? "请分析我附加的图片，并结合当前上下文回答。" : "");
+    const userText = draft.trim() || (imageAttachments.length || textFileAttachments.length ? "请分析我附加的文件，并结合当前上下文回答。" : "");
     if (!userText) return "";
     const contextInstruction = contextOptions.find((option) => option.value === contextMode)?.instruction;
     const blocks = [
@@ -61332,6 +61458,21 @@ ${text}` : text);
     if (attachments.length) {
       blocks.push(`请优先参考这些项目文件或目录：
 ${attachments.map((entry) => `- ${entry.relativePath}`).join("\n")}`);
+    }
+    if (textFileAttachments.length) {
+      blocks.push(
+        `用户拖入/选择的本地文本文件：
+${textFileAttachments.map((file) => {
+          const content = file.content.length > maxDroppedTextChars ? `${file.content.slice(0, maxDroppedTextChars)}
+
+[文件过长，已截取前 ${maxDroppedTextChars.toLocaleString("zh-CN")} 字。]` : file.content;
+          return `## ${file.name}
+
+\`\`\`
+${content}
+\`\`\``;
+        }).join("\n\n")}`
+      );
     }
     if (thinkingOption.instruction) {
       blocks.push(thinkingOption.instruction);
@@ -61360,6 +61501,7 @@ ${userText}` : userText;
       setComposerPanel("none");
       setAttachments([]);
       setImageAttachments([]);
+      setTextFileAttachments([]);
       setAttachmentError(void 0);
       setShowSubAgents(true);
       await runSubAgent(selectedAgentProfile.subAgentRole, nextDraft, imageAttachments, agentTemperature, void 0, {
@@ -61371,6 +61513,7 @@ ${userText}` : userText;
     setComposerPanel("none");
     setAttachments([]);
     setImageAttachments([]);
+    setTextFileAttachments([]);
     setAttachmentError(void 0);
     await sendMessage(imageAttachments, agentTemperature, {
       modelId: activeRuntimeModel,
@@ -61429,6 +61572,47 @@ ${userText}` : userText;
     setPreviewSessionId(void 0);
     setRenameSessionId(void 0);
   };
+  const importHistorySessions = async () => {
+    if (isRunning || historyImporting) return;
+    const defaultDirectory = projectRoot ? `${projectRoot.replace(/[\\/]+$/, "")}/.wangyang` : void 0;
+    setHistoryImportNotice("");
+    const selected = await window.electronAPI.selectDirectory(defaultDirectory);
+    if (!selected?.path) return;
+    setHistoryImporting(true);
+    try {
+      const imported = await window.electronAPI.importAgentSessionsFromDirectory(selected.path);
+      const count = importAgentSessions(imported.sessions);
+      if (!count) {
+        setHistoryImportNotice("没有可导入的历史会话。");
+        return;
+      }
+      setHistoryTab(projectRoot ? "current" : "legacy");
+      setPreviewSessionId(void 0);
+      setHistoryImportNotice(`已导入 ${count} 条历史会话。来源：${imported.path}`);
+    } catch (error) {
+      setHistoryImportNotice(error instanceof Error ? error.message : "导入历史会话失败");
+    } finally {
+      setHistoryImporting(false);
+    }
+  };
+  const exportHistorySessions = async () => {
+    if (!historySessions.length) {
+      setHistoryImportNotice("没有可导出的历史会话。");
+      return;
+    }
+    const stamp = (/* @__PURE__ */ new Date()).toISOString().slice(0, 19).replace(/[T:]/g, "-");
+    const prefix2 = historyTab === "current" ? "agent-sessions" : "legacy-agent-sessions";
+    try {
+      const saved = await window.electronAPI.saveTextFile(
+        `${prefix2}-${stamp}.json`,
+        `${JSON.stringify(historySessions, null, 2)}
+`
+      );
+      if (saved?.path) setHistoryImportNotice(`已导出 ${historySessions.length} 条历史会话：${saved.path}`);
+    } catch (error) {
+      setHistoryImportNotice(error instanceof Error ? error.message : "导出历史会话失败");
+    }
+  };
   const updatePromptContext = (patch) => {
     if (!localSettings) return;
     void saveLocalSettings({
@@ -61478,7 +61662,7 @@ ${scoped.map((item) => `- [${item.status === "completed" ? "x" : " "}] [${item.s
     await writeTodos(next2);
   };
   reactExports.useEffect(() => {
-    if (composerPanel !== "mention") return;
+    if (composerPanel !== "mention" || !mentionSearchOpen) return;
     let alive = true;
     setFileLoading(true);
     const query = fileSearchQuery.trim();
@@ -61495,7 +61679,7 @@ ${scoped.map((item) => `- [${item.status === "completed" ? "x" : " "}] [${item.s
     return () => {
       alive = false;
     };
-  }, [composerPanel, fileSearchQuery]);
+  }, [composerPanel, fileSearchQuery, mentionSearchOpen]);
   reactExports.useEffect(() => {
     const solution = agentSolutions.find((item) => item.mode === agentMode);
     if (!solution || solution.id === selectedSolutionId) return;
@@ -61506,31 +61690,86 @@ ${scoped.map((item) => `- [${item.status === "completed" ? "x" : " "}] [${item.s
   }, [agentMode, selectedAgentId, selectedSolutionId]);
   const renderComposerPanel = () => {
     if (composerPanel === "mention") {
-      return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "composer-popup mention-popup", children: [
+      return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "composer-popup mention-popup file-menu-popup", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("header", { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "引用项目文件" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setComposerPanel("none"), children: /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 13 }) })
-        ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "popup-search", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { size: 14 }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "添加照片和文件" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "input",
+            "button",
             {
-              value: fileSearchQuery,
-              placeholder: "搜索文件或目录",
-              onChange: (event) => setFileSearchQuery(event.target.value)
+              onClick: () => {
+                setComposerPanel("none");
+                setMentionSearchOpen(false);
+              },
+              children: /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 13 })
             }
           )
         ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "popup-list", children: [
-          fileLoading ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "正在读取..." }) : null,
-          !fileLoading && fileCandidates.length ? fileCandidates.map((entry) => /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { onClick: () => addAttachment(entry), children: [
-            entry.type === "directory" ? /* @__PURE__ */ jsxRuntimeExports.jsx(BookOpen, { size: 14 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(FileText, { size: 14 }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: entry.relativePath }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("em", { children: fileMeta(entry) })
-          ] }, entry.relativePath)) : null,
-          !fileLoading && !fileCandidates.length ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "暂无匹配文件" }) : null
-        ] })
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "popup-list file-menu-actions", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { onClick: () => void importTextFileToDraft(), children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(FileText, { size: 15 }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "打开文本文件" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("small", { children: "TXT、Markdown、HTML 作为附件发送" })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "button",
+            {
+              disabled: !projectRoot,
+              onClick: () => {
+                setMentionSearchOpen((open2) => !open2);
+                setFileSearchQuery("");
+              },
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { size: 15 }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "搜索项目文件" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("small", { children: projectRoot ? "引用项目内文件或目录" : "请先打开项目" })
+                ] })
+              ]
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "button",
+            {
+              onClick: () => {
+                imageInputRef.current?.click();
+                setComposerPanel("none");
+                setMentionSearchOpen(false);
+              },
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(Image, { size: 15 }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "添加图片文件" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("small", { children: "PNG、JPEG、WebP、GIF" })
+                ] })
+              ]
+            }
+          )
+        ] }),
+        mentionSearchOpen ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "popup-search", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { size: 14 }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "input",
+              {
+                autoFocus: true,
+                value: fileSearchQuery,
+                placeholder: "搜索项目文件或目录",
+                onChange: (event) => setFileSearchQuery(event.target.value)
+              }
+            )
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "popup-list file-search-results", children: [
+            fileLoading ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "正在读取..." }) : null,
+            !fileLoading && fileCandidates.length ? fileCandidates.map((entry) => /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { onClick: () => addAttachment(entry), children: [
+              entry.type === "directory" ? /* @__PURE__ */ jsxRuntimeExports.jsx(BookOpen, { size: 14 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(FileText, { size: 14 }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: entry.relativePath }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("em", { children: fileMeta(entry) })
+            ] }, entry.relativePath)) : null,
+            !fileLoading && !fileCandidates.length ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { children: "暂无匹配文件" }) : null
+          ] })
+        ] }) : null
       ] });
     }
     if (composerPanel === "slash") {
@@ -61771,6 +62010,14 @@ ${scoped.map((item) => `- [${item.status === "completed" ? "x" : " "}] [${item.s
         /* @__PURE__ */ jsxRuntimeExports.jsxs("header", { children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: "历史会话" }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { disabled: isRunning || historyImporting, onClick: () => void importHistorySessions(), children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(Upload, { size: 13 }),
+              historyImporting ? "导入中" : "导入"
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { disabled: !historySessions.length, onClick: () => void exportHistorySessions(), children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(Download, { size: 13 }),
+              "导出"
+            ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { disabled: isRunning || !historySessions.length, onClick: confirmClearSessions, children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx(Trash2, { size: 13 }),
               "清空"
@@ -61785,6 +62032,7 @@ ${scoped.map((item) => `- [${item.status === "completed" ? "x" : " "}] [${item.s
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: historyTab === "current" ? "active" : "", onClick: () => setHistoryTab("current"), children: "当前项目" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: historyTab === "legacy" ? "active" : "", onClick: () => setHistoryTab("legacy"), children: "旧版" })
         ] }),
+        historyImportNotice ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "history-import-notice", children: historyImportNotice }) : null,
         historySessions.length ? historySessions.slice(0, 30).map((session) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "history-row expanded", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: session.id === currentSessionId && historyTab === "current" ? "active history-main" : "history-main", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: agentModes.find((mode) => mode.value === session.mode)?.label ?? "智能体" }),
@@ -62159,182 +62407,225 @@ ${scoped.map((item) => `- [${item.status === "completed" ? "x" : " "}] [${item.s
         null
       ] })
     ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("footer", { className: "agent-composer", children: [
-      renderComposerPanel(),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "model-line", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("select", { value: activeRuntimeModel, onChange: (event) => setRuntimeModelForProfile(selectedAgentId, event.target.value), children: (aiConfig?.availableModels ?? [activeRuntimeModel]).map((model) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: model, children: displayModelId(model) }, model)) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "button",
-          {
-            className: "default-tag",
-            title: `恢复 ${selectedAgentProfile.label} 默认模型：${displayModelId(defaultActiveRuntimeModel)}`,
-            onClick: () => resetRuntimeModelForProfile(selectedAgentId),
-            children: activeRuntimeModelHasOverride ? "覆盖" : "默认"
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "span",
-          {
-            className: "model-info",
-            title: [
-              `当前实际模型：${displayModelId(activeRuntimeModel)}`,
-              `当前智能体：${selectedAgentProfile.label}`,
-              `默认模型：${displayModelId(defaultActiveRuntimeModel)}`,
-              activeRuntimeModelHasOverride ? "当前使用本地覆盖模型" : "当前使用场景默认模型",
-              selectedModelMetadata ? `上下文：${selectedModelMetadata.maxContextWindow}` : "",
-              selectedModelMetadata?.supportImage ? "支持图片" : "纯文本",
-              selectedModelMetadata?.supportThinking ? "支持 thinking" : "",
-              selectedModelMetadata?.deprecated ? "已弃用" : ""
-            ].filter(Boolean).join("；"),
-            children: /* @__PURE__ */ jsxRuntimeExports.jsx(Info, { size: 13 })
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs(
-          "span",
-          {
-            className: activeRuntimeModelStatus.isReady ? "model-status ready" : "model-status blocked",
-            title: [
-              `实际调用模型：${displayModelId(activeRuntimeModel)}`,
-              `接口：${activeRuntimeModelStatus.providerLabel}`,
-              `实际模型名：${activeRuntimeModelStatus.modelName}`,
-              `请求格式：${activeRuntimeModelStatus.requestFormat}`,
-              activeRuntimeModelStatus.hasApiKey ? "API Key 已配置" : "API Key 未配置"
-            ].join(" / "),
-            children: [
-              activeRuntimeModelStatus.isReady ? "可用" : "未配置",
-              " · ",
-              displayModelId(activeRuntimeModel)
-            ]
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "plus-button", title: "新会话", disabled: isRunning, onClick: startNewAgentSession, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Plus, { size: 15 }) })
-      ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "context-line", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("select", { value: contextMode, onChange: (event) => setContextMode(event.target.value), children: contextOptions.map((option) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: option.value, disabled: option.value === "current-file" && !activeFilePath, children: option.label }, option.value)) }),
-        activeFilePath ? /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { title: activeFilePath, onClick: () => setContextMode("current-file"), children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(FileText, { size: 13 }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: activeFilePath })
-        ] }) : null,
-        attachments.map((entry) => /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { className: "attachment-chip", title: entry.relativePath, onClick: () => removeAttachment(entry.relativePath), children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(Paperclip, { size: 12 }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: entry.name }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 11 })
-        ] }, entry.relativePath)),
-        imageAttachments.map((attachment) => /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { className: "image-chip", title: attachment.name, onClick: () => removeImageAttachment(attachment.id), children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("img", { src: attachment.dataUrl, alt: "" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: attachment.name }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 11 })
-        ] }, attachment.id)),
-        attachmentError ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "attachment-error", children: attachmentError }) : null
-      ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(
-        "textarea",
-        {
-          value: draft,
-          placeholder: "请输入你的需求（Enter 发送，Shift + Enter 换行，/ 快速选择技能或自定义提示词，@ 快速输入文件路径）",
-          onChange: (event) => {
-            const value = event.target.value;
-            setDraft(value);
-            if (value.endsWith("/")) {
-              setComposerPanel("slash");
-            } else if (value.endsWith("@")) {
-              setFileSearchQuery("");
-              setComposerPanel("mention");
+    /* @__PURE__ */ jsxRuntimeExports.jsxs(
+      "footer",
+      {
+        className: isComposerDragOver ? "agent-composer drag-over" : "agent-composer",
+        onDragEnter: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.dataTransfer.types.includes("Files")) setIsComposerDragOver(true);
+        },
+        onDragOver: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = "copy";
+          if (event.dataTransfer.types.includes("Files")) setIsComposerDragOver(true);
+        },
+        onDragLeave: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!event.currentTarget.contains(event.relatedTarget)) setIsComposerDragOver(false);
+        },
+        onDrop: (event) => void handleComposerDrop(event),
+        children: [
+          isComposerDragOver ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "composer-drop-overlay", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(Paperclip, { size: 16 }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "松开以上传给智能体" })
+          ] }) : null,
+          renderComposerPanel(),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "model-line", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("select", { value: activeRuntimeModel, onChange: (event) => setRuntimeModelForProfile(selectedAgentId, event.target.value), children: (aiConfig?.availableModels ?? [activeRuntimeModel]).map((model) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: model, children: displayModelId(model) }, model)) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                className: "default-tag",
+                title: `恢复 ${selectedAgentProfile.label} 默认模型：${displayModelId(defaultActiveRuntimeModel)}`,
+                onClick: () => resetRuntimeModelForProfile(selectedAgentId),
+                children: activeRuntimeModelHasOverride ? "覆盖" : "默认"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "span",
+              {
+                className: "model-info",
+                title: [
+                  `当前实际模型：${displayModelId(activeRuntimeModel)}`,
+                  `当前智能体：${selectedAgentProfile.label}`,
+                  `默认模型：${displayModelId(defaultActiveRuntimeModel)}`,
+                  activeRuntimeModelHasOverride ? "当前使用本地覆盖模型" : "当前使用场景默认模型",
+                  selectedModelMetadata ? `上下文：${selectedModelMetadata.maxContextWindow}` : "",
+                  selectedModelMetadata?.supportImage ? "支持图片" : "纯文本",
+                  selectedModelMetadata?.supportThinking ? "支持 thinking" : "",
+                  selectedModelMetadata?.deprecated ? "已弃用" : ""
+                ].filter(Boolean).join("；"),
+                children: /* @__PURE__ */ jsxRuntimeExports.jsx(Info, { size: 13 })
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "span",
+              {
+                className: activeRuntimeModelStatus.isReady ? "model-status ready" : "model-status blocked",
+                title: [
+                  `实际调用模型：${displayModelId(activeRuntimeModel)}`,
+                  `接口：${activeRuntimeModelStatus.providerLabel}`,
+                  `实际模型名：${activeRuntimeModelStatus.modelName}`,
+                  `请求格式：${activeRuntimeModelStatus.requestFormat}`,
+                  activeRuntimeModelStatus.hasApiKey ? "API Key 已配置" : "API Key 未配置"
+                ].join(" / "),
+                children: [
+                  activeRuntimeModelStatus.isReady ? "可用" : "未配置",
+                  " · ",
+                  displayModelId(activeRuntimeModel)
+                ]
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "plus-button", title: "新会话", disabled: isRunning, onClick: startNewAgentSession, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Plus, { size: 15 }) })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "context-line", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("select", { value: contextMode, onChange: (event) => setContextMode(event.target.value), children: contextOptions.map((option) => /* @__PURE__ */ jsxRuntimeExports.jsx("option", { value: option.value, disabled: option.value === "current-file" && !activeFilePath, children: option.label }, option.value)) }),
+            activeFilePath ? /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { title: activeFilePath, onClick: () => setContextMode("current-file"), children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(FileText, { size: 13 }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: activeFilePath })
+            ] }) : null,
+            attachments.map((entry) => /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { className: "attachment-chip", title: entry.relativePath, onClick: () => removeAttachment(entry.relativePath), children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(Paperclip, { size: 12 }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: entry.name }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 11 })
+            ] }, entry.relativePath)),
+            imageAttachments.map((attachment) => /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { className: "image-chip", title: attachment.name, onClick: () => removeImageAttachment(attachment.id), children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("img", { src: attachment.dataUrl, alt: "" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: attachment.name }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 11 })
+            ] }, attachment.id)),
+            textFileAttachments.map((attachment) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "button",
+              {
+                className: "text-file-chip",
+                title: attachment.name,
+                onClick: () => removeTextFileAttachment(attachment.id),
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(FileText, { size: 12 }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: attachment.name }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 11 })
+                ]
+              },
+              attachment.id
+            )),
+            attachmentError ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "attachment-error", children: attachmentError }) : null
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "textarea",
+            {
+              value: draft,
+              placeholder: "请输入你的需求（Enter 发送，Shift + Enter 换行，/ 快速选择技能或自定义提示词，@ 快速输入文件路径）",
+              onChange: (event) => {
+                const value = event.target.value;
+                setDraft(value);
+                if (value.endsWith("/")) {
+                  setComposerPanel("slash");
+                } else if (value.endsWith("@")) {
+                  setFileSearchQuery("");
+                  setMentionSearchOpen(true);
+                  setComposerPanel("mention");
+                }
+              },
+              onKeyDown: (event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void sendComposerMessage();
+                }
+              }
             }
-          },
-          onKeyDown: (event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void sendComposerMessage();
-            }
-          }
-        }
-      ),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "composer-actions", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "input",
-          {
-            ref: imageInputRef,
-            hidden: true,
-            type: "file",
-            accept: "image/png,image/jpeg,image/webp,image/gif",
-            multiple: true,
-            onChange: (event) => {
-              void addImageFiles(event.target.files);
-              event.target.value = "";
-            }
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs(
-          "button",
-          {
-            className: `permission-button permission-${selectedPermissionMode}${composerPanel === "permissions" ? " active" : ""}`,
-            disabled: !localSettings,
-            title: `智能体工具权限：${selectedPermissionOption.label}。${selectedPermissionOption.description}`,
-            onClick: () => setComposerPanel((panel) => panel === "permissions" ? "none" : "permissions"),
-            children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(Shield, { size: 14 }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: selectedPermissionOption.shortLabel }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronDown, { size: 13 })
-            ]
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "button",
-          {
-            className: composerPanel === "mention" ? "square-tool active" : "square-tool",
-            title: "引用文件",
-            onClick: () => {
-              setFileSearchQuery("");
-              setComposerPanel((panel) => panel === "mention" ? "none" : "mention");
-            },
-            children: /* @__PURE__ */ jsxRuntimeExports.jsx(AtSign, { size: 15 })
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "square-tool", title: "添加图片", onClick: () => imageInputRef.current?.click(), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Image, { size: 15 }) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "button",
-          {
-            className: composerPanel === "slash" ? "square-tool active" : "square-tool",
-            title: "快速命令",
-            onClick: () => setComposerPanel((panel) => panel === "slash" ? "none" : "slash"),
-            children: /* @__PURE__ */ jsxRuntimeExports.jsx(Wrench, { size: 15 })
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "button",
-          {
-            className: composerPanel === "prompts" ? "prompt-button active" : "prompt-button",
-            onClick: () => setComposerPanel((panel) => panel === "prompts" ? "none" : "prompts"),
-            children: "我的提示词"
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs(
-          "button",
-          {
-            className: thinkingMode === "fast" ? "think-button" : "think-button active",
-            onClick: () => setComposerPanel((panel) => panel === "thinking" ? "none" : "thinking"),
-            children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(Brain, { size: 15 }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: thinkingOption.label }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronDown, { size: 13 })
-            ]
-          }
-        ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(
-          "button",
-          {
-            className: "send-round",
-            disabled: !isRunning && (!draft.trim() && !imageAttachments.length || subAgentRunning),
-            onClick: () => {
-              if (isRunning) stopAgent();
-              else void sendComposerMessage();
-            },
-            children: isRunning ? /* @__PURE__ */ jsxRuntimeExports.jsx(Square, { size: 15 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(Send, { size: 15 })
-          }
-        )
-      ] })
-    ] })
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "composer-actions", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "input",
+              {
+                ref: imageInputRef,
+                hidden: true,
+                type: "file",
+                accept: "image/png,image/jpeg,image/webp,image/gif",
+                multiple: true,
+                onChange: (event) => {
+                  void addImageFiles(event.target.files);
+                  event.target.value = "";
+                }
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "button",
+              {
+                className: `permission-button permission-${selectedPermissionMode}${composerPanel === "permissions" ? " active" : ""}`,
+                disabled: !localSettings,
+                title: `智能体工具权限：${selectedPermissionOption.label}。${selectedPermissionOption.description}`,
+                onClick: () => setComposerPanel((panel) => panel === "permissions" ? "none" : "permissions"),
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(Shield, { size: 14 }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: selectedPermissionOption.shortLabel }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronDown, { size: 13 })
+                ]
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                className: composerPanel === "mention" ? "square-tool active" : "square-tool",
+                title: "添加照片和文件",
+                onClick: () => {
+                  setFileSearchQuery("");
+                  setMentionSearchOpen(false);
+                  setComposerPanel((panel) => panel === "mention" ? "none" : "mention");
+                },
+                children: /* @__PURE__ */ jsxRuntimeExports.jsx(Paperclip, { size: 15 })
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "square-tool", title: "添加图片", onClick: () => imageInputRef.current?.click(), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Image, { size: 15 }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                className: composerPanel === "slash" ? "square-tool active" : "square-tool",
+                title: "快速命令",
+                onClick: () => setComposerPanel((panel) => panel === "slash" ? "none" : "slash"),
+                children: /* @__PURE__ */ jsxRuntimeExports.jsx(Wrench, { size: 15 })
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                className: composerPanel === "prompts" ? "prompt-button active" : "prompt-button",
+                onClick: () => setComposerPanel((panel) => panel === "prompts" ? "none" : "prompts"),
+                children: "我的提示词"
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              "button",
+              {
+                className: thinkingMode === "fast" ? "think-button" : "think-button active",
+                onClick: () => setComposerPanel((panel) => panel === "thinking" ? "none" : "thinking"),
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(Brain, { size: 15 }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: thinkingOption.label }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronDown, { size: 13 })
+                ]
+              }
+            ),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "button",
+              {
+                className: "send-round",
+                disabled: !isRunning && (!draft.trim() && !imageAttachments.length && !textFileAttachments.length || subAgentRunning),
+                onClick: () => {
+                  if (isRunning) stopAgent();
+                  else void sendComposerMessage();
+                },
+                children: isRunning ? /* @__PURE__ */ jsxRuntimeExports.jsx(Square, { size: 15 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(Send, { size: 15 })
+              }
+            )
+          ] })
+        ]
+      }
+    )
   ] });
 }
 var __create = Object.create;
@@ -80498,6 +80789,21 @@ function ProjectExplorer({ isSidebarCollapsed = false, onToggleSidebar }) {
       setProjectCreateDraft((current) => ({ ...current, parentPath: result2.path }));
     }
   };
+  const openExistingProject = async () => {
+    const result2 = await window.electronAPI.selectDirectory(projectRoot || projectCreateDraft.parentPath || void 0);
+    if (!result2?.path) return;
+    const canSwitch = await ensureCanSwitchProject();
+    if (!canSwitch) return;
+    try {
+      await setProjectRoot(result2.path);
+      setRootDraft(result2.path);
+      await refreshProjectList();
+      setProjectManagerOpen(false);
+      message2.success(`已打开项目：${basename(result2.path) || result2.path}`);
+    } catch (error) {
+      message2.error(error instanceof Error ? error.message : "打开已有项目失败");
+    }
+  };
   const createProject = async () => {
     const name = projectCreateDraft.name.trim();
     if (!name) {
@@ -82184,7 +82490,10 @@ ${draft.prompt}
           /* @__PURE__ */ jsxRuntimeExports.jsxs("section", { className: "project-manager-list", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("header", { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { children: "最近项目" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { size: "small", onClick: () => void refreshProjectList(), children: "刷新" })
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "project-manager-actions", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { size: "small", type: "primary", onClick: () => void openExistingProject(), children: "打开已有项目" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { size: "small", onClick: () => void refreshProjectList(), children: "刷新" })
+              ] })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "project-list", children: [
               projects.map((project) => {
