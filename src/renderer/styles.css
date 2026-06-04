@@ -3083,6 +3083,14 @@ pre {
 
 .history-panel > header {
   min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.history-panel {
+  width: min(430px, calc(100% - 24px));
+  max-width: calc(100% - 24px);
 }
 
 .history-panel > header > strong {
@@ -3094,7 +3102,7 @@ pre {
   min-width: 0;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 6px;
   overflow-x: auto;
   overflow-y: hidden;
@@ -3107,8 +3115,14 @@ pre {
   min-height: 28px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
+  min-width: 58px;
   white-space: nowrap;
+}
+
+.history-panel > header > div button:last-child {
+  min-width: 70px;
 }
 
 .history-tabs {
@@ -7362,6 +7376,35 @@ html body .file-search-results {
 html body .file-search-results button {
   min-height: 34px !important;
   padding: 6px 8px !important;
+}
+
+/* History panel needs enough room for import/export/clear/new actions. */
+html body .history-panel {
+  width: min(430px, calc(100% - 24px)) !important;
+  max-width: calc(100% - 24px) !important;
+}
+
+html body .history-panel > header {
+  min-width: 0;
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+html body .history-panel > header > div {
+  min-width: 0;
+  justify-content: flex-start !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+html body .history-panel > header > div button {
+  min-width: 58px;
+  justify-content: center;
+}
+
+html body .history-panel > header > div button:last-child {
+  min-width: 70px;
 }
 
 /* Light theme guard: process/tool trace surfaces must not keep dark-mode blocks. */
