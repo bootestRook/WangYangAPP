@@ -1,0 +1,47 @@
+{
+  "name": "wangyang",
+  "version": "0.1.0",
+  "private": true,
+  "description": "王阳本地 AI 写作与智能体桌面应用。",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "tsc --noEmit && electron-vite build",
+    "preview": "electron-vite preview",
+    "start": "electron-vite preview",
+    "fix:electron": "npm rebuild electron",
+    "typecheck": "tsc --noEmit"
+  },
+  "build": {
+    "extraResources": [
+      {
+        "from": "resources/icon.ico",
+        "to": "icon.ico"
+      }
+    ]
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.6.1",
+    "@ant-design/x": "^2.7.0",
+    "@modelcontextprotocol/sdk": "^1.13.0",
+    "antd": "^6.4.3",
+    "docx": "^9.7.1",
+    "fflate": "^0.8.3",
+    "gpt-tokenizer": "^3.0.1",
+    "lucide-react": "^0.468.0",
+    "openai": "^4.77.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "35.0.0",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}
