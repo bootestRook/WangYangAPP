@@ -7364,6 +7364,41 @@ html body .file-search-results button {
   padding: 6px 8px !important;
 }
 
+/* Light theme guard: process/tool trace surfaces must not keep dark-mode blocks. */
+html body .app-shell.theme-light .agent-process {
+  border-color: var(--wy-border) !important;
+  background: transparent !important;
+  color: var(--wy-text-secondary) !important;
+}
+
+html body .app-shell.theme-light :is(.agent-process-step, .agent-message.tool, .tool-call) {
+  border-color: var(--wy-border) !important;
+  background: var(--wy-bg-secondary) !important;
+  color: var(--wy-text-secondary) !important;
+  -webkit-text-fill-color: currentColor !important;
+}
+
+html body .app-shell.theme-light :is(
+  .agent-process summary > span,
+  .agent-process summary em,
+  .agent-process summary > svg,
+  .agent-process-step header,
+  .agent-process-step header code,
+  .agent-process-step pre,
+  .agent-message.tool header,
+  .agent-message.tool header code,
+  .agent-message.tool pre,
+  .tool-call,
+  .tool-call svg,
+  .tool-call span,
+  .tool-call em,
+  .tool-call code,
+  .agent-process-empty
+) {
+  color: var(--wy-text-secondary) !important;
+  -webkit-text-fill-color: var(--wy-text-secondary) !important;
+}
+
 /* History toolbar guard: actions scroll horizontally instead of wrapping. */
 html body .history-panel > header {
   min-width: 0;
