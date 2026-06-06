@@ -128,6 +128,54 @@ function isTextPath(relativePath: string): boolean {
   return textExtensions.has(extensionOf(relativePath))
 }
 
+function chapterNumberFromPath(relativePath: string): number | undefined {
+  const name = basename(relativePath).replace(/\.[^.]+$/, '')
+  const patterns = [/(?:^|[^a-z])chapter[-_\s]*(\d{1,4})(?:\D|$)/i, /第\s*0*(\d{1,4})\s*章/]
+  for (const pattern of patterns) {
+    const match = name.match(pattern)
+    if (!match) continue
+    const chapterNumber = Number(match[1])
+    if (Number.isInteger(chapterNumber) && chapterNumber > 0) return chapterNumber
+  }
+  return undefined
+}
+
+async function findSameChapterFile(
+  api: Window['electronAPI'],
+  relativePath: string
+): Promise<{ entry: ProjectEntry; chapterNumber: number } | undefined> {
+  if (extensionOf(relativePath) !== '.md') return undefined
+  const chapterNumber = chapterNumberFromPath(relativePath)
+  if (!chapterNumber) return undefined
+
+  const normalizedTarget = normalizePath(relativePath)
+  let listing
+  try {
+    listing = await api.listDirectory(dirname(normalizedTarget))
+  } catch {
+    return undefined
+  }
+
+  const entry = listing.entries.find((candidate) => {
+    if (candidate.type !== 'file') return false
+    if (normalizePath(candidate.relativePath) === normalizedTarget) return false
+    if (extensionOf(candidate.name) !== '.md') return false
+    return chapterNumberFromPath(candidate.name) === chapterNumber
+  })
+
+  return entry ? { entry, chapterNumber } : undefined
+}
+
+async function assertNoSameChapterDuplicate(api: Window['electronAPI'], relativePath: string): Promise<void> {
+  const duplicate = await findSameChapterFile(api, relativePath)
+  if (!duplicate) return
+  throw new Error(
+    `章节重复保护：${duplicate.entry.relativePath} 已经是第 ${duplicate.chapterNumber} 章。不要再创建 ${normalizePath(
+      relativePath
+    )}；请覆盖已有文件，或先用 move_file/rename_file/delete_file_or_folder 统一命名后再写入。`
+  )
+}
+
 function coerceStringArray(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value.map((item) => (typeof item === 'string' ? item : stringify(item))).filter(Boolean)
@@ -505,6 +553,7 @@ export function createBuiltinTools(runtime: ToolRuntime): RegisteredTool[] {
         const path = requireString(args, 'path')
         const rawType = optionalString(args, 'type')
         const type = rawType === 'directory' ? 'directory' : 'file'
+        if (type === 'file') await assertNoSameChapterDuplicate(api, path)
         return result('create_file_or_folder', await api.createEntry(path, type, optionalString(args, 'content') ?? ''))
       }
     },
@@ -551,7 +600,8 @@ export function createBuiltinTools(runtime: ToolRuntime): RegisteredTool[] {
     },
     {
       name: 'write_file_content',
-      description: 'Write UTF-8 content to a project-relative file.',
+      description:
+        'Write UTF-8 content to a project-relative file. When writing chapters, reuse the existing file for the same chapter number instead of creating a second file with a different name.',
       mode: 'write',
       parameters: {
         type: 'object',
@@ -561,7 +611,11 @@ export function createBuiltinTools(runtime: ToolRuntime): RegisteredTool[] {
         },
         required: ['path', 'content']
       },
-      execute: async (args) => result('write_file_content', await api.writeFile(requireString(args, 'path'), requireString(args, 'content')))
+      execute: async (args) => {
+        const path = requireString(args, 'path')
+        await assertNoSameChapterDuplicate(api, path)
+        return result('write_file_content', await api.writeFile(path, requireString(args, 'content')))
+      }
     },
     {
       name: 'replace_content_words',
@@ -962,12 +1016,12 @@ export function createBuiltinTools(runtime: ToolRuntime): RegisteredTool[] {
     },
     {
       name: 'run_command',
-      description: 'Run a shell command in the current project. Use sparingly.',
+      description: 'Run a shell command in the current project only when local diagnostics, build checks, or file-state checks are necessary. Do not retry the exact same command after receiving stdout/stderr; use the prior result or change the command.',
       mode: 'danger',
       parameters: {
         type: 'object',
         properties: {
-          command: { type: 'string', description: 'Command to run in the current project root.' }
+          command: { type: 'string', description: 'Command to run in the current project root. Must not be identical to a command already run in this turn unless the user explicitly requested a rerun.' }
         },
         required: ['command']
       },

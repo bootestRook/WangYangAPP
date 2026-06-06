@@ -43,8 +43,34 @@ function toolSignature(toolCall: ToolCall, args: Record<string, unknown>): strin
   return `${toolCall.name}:${stableStringify(args)}`
 }
 
-function loopGuardError(reason: string): string {
-  return `${reason} Stopped this run to prevent an infinite tool loop.`
+function truncateForError(value: string, maxLength = 500): string {
+  const normalized = value.trim()
+  if (normalized.length <= maxLength) return normalized
+  return `${normalized.slice(0, maxLength)}...`
+}
+
+function toolDisplayName(toolName: string): string {
+  return toolName === 'run_command' ? '本地命令 run_command' : `工具「${toolName}」`
+}
+
+function repeatedToolCallResult(toolName: string, count: number): string {
+  return `${toolDisplayName(toolName)}第 ${count} 次使用了完全相同的参数。为避免无限循环，本次调用已被拦截；请直接基于前面的工具结果继续回复，不要再次请求同一参数。`
+}
+
+function repeatedToolCallError(toolName: string, count: number): string {
+  return `${toolDisplayName(toolName)}累计 ${count} 次使用相同参数，已停止本轮运行，避免无限循环。请根据上一条工具结果继续，或换一个不同的操作。`
+}
+
+function repeatedToolFailureError(toolName: string, count: number, lastError: string): string {
+  return `${toolDisplayName(toolName)}用相同参数连续失败 ${count} 次，已停止本轮运行。最后一次错误：${truncateForError(lastError)}`
+}
+
+function invalidJsonResult(toolName: string, error: unknown): string {
+  return `${toolDisplayName(toolName)}的参数不是有效 JSON：${error instanceof Error ? error.message : String(error)}`
+}
+
+function repeatedInvalidJsonError(toolName: string, count: number, lastError: string): string {
+  return `${toolDisplayName(toolName)}连续 ${count} 次给出了无效 JSON 参数，已停止本轮运行。最后一次错误：${truncateForError(lastError)}`
 }
 
 function toolRequiresArguments(definition: ToolDefinition | undefined): boolean {
@@ -121,7 +147,7 @@ export async function* runAgent(input: AgentRunInput): AsyncGenerator<AgentRunEv
       if (toolSteps >= allowedToolSteps) {
         const canContinue = await input.confirmContinue?.(toolSteps, allowedToolSteps + maxToolSteps)
         if (!canContinue) {
-          yield { type: 'error', error: `Maximum tool steps reached: ${allowedToolSteps}` }
+          yield { type: 'error', error: `本轮工具调用已达到上限：${allowedToolSteps} 步。请缩小任务范围，或明确要求继续。` }
           return
         }
         allowedToolSteps += maxToolSteps
@@ -132,12 +158,11 @@ export async function* runAgent(input: AgentRunInput): AsyncGenerator<AgentRunEv
         args = parseToolArgs(toolCall)
       } catch (error) {
         toolSteps += 1
+        const invalidArgsContent = invalidJsonResult(toolCall.name, error)
         const invalidArgsResult: ToolResult = {
           toolCallId: toolCall.id,
           name: toolCall.name,
-          content: `Invalid JSON arguments for tool "${toolCall.name}": ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          content: invalidArgsContent,
           isSuccess: false
         }
         yield { type: 'tool-call', messageId: assistantId, toolCall: { ...toolCall, status: 'error' } }
@@ -155,9 +180,7 @@ export async function* runAgent(input: AgentRunInput): AsyncGenerator<AgentRunEv
         if (failureCount >= maxRepeatedToolFailures) {
           yield {
             type: 'error',
-            error: loopGuardError(
-              `Tool "${toolCall.name}" produced invalid JSON arguments ${failureCount} times. Last error: ${invalidArgsResult.content}`
-            )
+            error: repeatedInvalidJsonError(toolCall.name, failureCount, invalidArgsResult.content)
           }
           return
         }
@@ -167,13 +190,27 @@ export async function* runAgent(input: AgentRunInput): AsyncGenerator<AgentRunEv
       const repeatedCount = (repeatedToolCalls.get(signature) ?? 0) + 1
       repeatedToolCalls.set(signature, repeatedCount)
       if (repeatedCount > maxRepeatedToolCalls) {
-        yield {
-          type: 'error',
-          error: loopGuardError(
-            `Tool "${toolCall.name}" was requested with the same arguments ${repeatedCount} times.`
-          )
+        toolSteps += 1
+        const guardResult: ToolResult = {
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+          content: repeatedToolCallResult(toolCall.name, repeatedCount),
+          isSuccess: false
         }
-        return
+        yield { type: 'tool-call', messageId: assistantId, toolCall: { ...toolCall, status: 'error' } }
+        messages.push({
+          id: id('tool'),
+          role: 'tool',
+          toolCallId: toolCall.id,
+          content: guardResult.content,
+          createdAt: Date.now()
+        })
+        yield { type: 'tool-result', toolResult: guardResult }
+        if (repeatedCount > maxRepeatedToolCalls + 1) {
+          yield { type: 'error', error: repeatedToolCallError(toolCall.name, repeatedCount) }
+          return
+        }
+        continue
       }
       const definition = input.tools.definitions.find((item) => item.name === toolCall.name)
       if (definition && input.confirmTool) {
@@ -221,9 +258,7 @@ export async function* runAgent(input: AgentRunInput): AsyncGenerator<AgentRunEv
         if (failureCount >= maxRepeatedToolFailures) {
           yield {
             type: 'error',
-            error: loopGuardError(
-              `Tool "${toolCall.name}" failed ${failureCount} times with the same arguments. Last error: ${toolResult.content}`
-            )
+            error: repeatedToolFailureError(toolCall.name, failureCount, toolResult.content)
           }
           return
         }

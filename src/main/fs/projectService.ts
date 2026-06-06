@@ -103,6 +103,7 @@ export async function writeProjectFile(
   const target = resolveInsideRoot(root, relativePath)
   await mkdir(path.dirname(target), { recursive: true })
   await writeFile(target, content, 'utf8')
+  await addProjectConfigEntry(ensureRoot(root), relativePath)
   return { relativePath, bytes: Buffer.byteLength(content, 'utf8') }
 }
 

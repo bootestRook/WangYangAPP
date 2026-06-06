@@ -58646,8 +58646,28 @@ function stableStringify(value) {
 function toolSignature(toolCall, args) {
   return `${toolCall.name}:${stableStringify(args)}`;
 }
-function loopGuardError(reason) {
-  return `${reason} Stopped this run to prevent an infinite tool loop.`;
+function truncateForError(value, maxLength = 500) {
+  const normalized = value.trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength)}...`;
+}
+function toolDisplayName(toolName) {
+  return toolName === "run_command" ? "本地命令 run_command" : `工具「${toolName}」`;
+}
+function repeatedToolCallResult(toolName, count) {
+  return `${toolDisplayName(toolName)}第 ${count} 次使用了完全相同的参数。为避免无限循环，本次调用已被拦截；请直接基于前面的工具结果继续回复，不要再次请求同一参数。`;
+}
+function repeatedToolCallError(toolName, count) {
+  return `${toolDisplayName(toolName)}累计 ${count} 次使用相同参数，已停止本轮运行，避免无限循环。请根据上一条工具结果继续，或换一个不同的操作。`;
+}
+function repeatedToolFailureError(toolName, count, lastError) {
+  return `${toolDisplayName(toolName)}用相同参数连续失败 ${count} 次，已停止本轮运行。最后一次错误：${truncateForError(lastError)}`;
+}
+function invalidJsonResult(toolName, error) {
+  return `${toolDisplayName(toolName)}的参数不是有效 JSON：${error instanceof Error ? error.message : String(error)}`;
+}
+function repeatedInvalidJsonError(toolName, count, lastError) {
+  return `${toolDisplayName(toolName)}连续 ${count} 次给出了无效 JSON 参数，已停止本轮运行。最后一次错误：${truncateForError(lastError)}`;
 }
 function toolRequiresArguments(definition) {
   return Boolean(definition?.parameters.required?.length);
@@ -58715,7 +58735,7 @@ async function* runAgent(input) {
       if (toolSteps >= allowedToolSteps) {
         const canContinue = await input.confirmContinue?.(toolSteps, allowedToolSteps + maxToolSteps);
         if (!canContinue) {
-          yield { type: "error", error: `Maximum tool steps reached: ${allowedToolSteps}` };
+          yield { type: "error", error: `本轮工具调用已达到上限：${allowedToolSteps} 步。请缩小任务范围，或明确要求继续。` };
           return;
         }
         allowedToolSteps += maxToolSteps;
@@ -58725,10 +58745,11 @@ async function* runAgent(input) {
         args = parseToolArgs(toolCall);
       } catch (error) {
         toolSteps += 1;
+        const invalidArgsContent = invalidJsonResult(toolCall.name, error);
         const invalidArgsResult = {
           toolCallId: toolCall.id,
           name: toolCall.name,
-          content: `Invalid JSON arguments for tool "${toolCall.name}": ${error instanceof Error ? error.message : String(error)}`,
+          content: invalidArgsContent,
           isSuccess: false
         };
         yield { type: "tool-call", messageId: assistantId, toolCall: { ...toolCall, status: "error" } };
@@ -58746,9 +58767,7 @@ async function* runAgent(input) {
         if (failureCount >= maxRepeatedToolFailures) {
           yield {
             type: "error",
-            error: loopGuardError(
-              `Tool "${toolCall.name}" produced invalid JSON arguments ${failureCount} times. Last error: ${invalidArgsResult.content}`
-            )
+            error: repeatedInvalidJsonError(toolCall.name, failureCount, invalidArgsResult.content)
           };
           return;
         }
@@ -58758,13 +58777,27 @@ async function* runAgent(input) {
       const repeatedCount = (repeatedToolCalls.get(signature) ?? 0) + 1;
       repeatedToolCalls.set(signature, repeatedCount);
       if (repeatedCount > maxRepeatedToolCalls) {
-        yield {
-          type: "error",
-          error: loopGuardError(
-            `Tool "${toolCall.name}" was requested with the same arguments ${repeatedCount} times.`
-          )
+        toolSteps += 1;
+        const guardResult = {
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+          content: repeatedToolCallResult(toolCall.name, repeatedCount),
+          isSuccess: false
         };
-        return;
+        yield { type: "tool-call", messageId: assistantId, toolCall: { ...toolCall, status: "error" } };
+        messages2.push({
+          id: id$1("tool"),
+          role: "tool",
+          toolCallId: toolCall.id,
+          content: guardResult.content,
+          createdAt: Date.now()
+        });
+        yield { type: "tool-result", toolResult: guardResult };
+        if (repeatedCount > maxRepeatedToolCalls + 1) {
+          yield { type: "error", error: repeatedToolCallError(toolCall.name, repeatedCount) };
+          return;
+        }
+        continue;
       }
       const definition = input.tools.definitions.find((item) => item.name === toolCall.name);
       if (definition && input.confirmTool) {
@@ -58811,9 +58844,7 @@ async function* runAgent(input) {
         if (failureCount >= maxRepeatedToolFailures) {
           yield {
             type: "error",
-            error: loopGuardError(
-              `Tool "${toolCall.name}" failed ${failureCount} times with the same arguments. Last error: ${toolResult.content}`
-            )
+            error: repeatedToolFailureError(toolCall.name, failureCount, toolResult.content)
           };
           return;
         }
@@ -58931,6 +58962,45 @@ function extensionOf(relativePath) {
 }
 function isTextPath(relativePath) {
   return textExtensions.has(extensionOf(relativePath));
+}
+function chapterNumberFromPath(relativePath) {
+  const name = basename$1(relativePath).replace(/\.[^.]+$/, "");
+  const patterns = [/(?:^|[^a-z])chapter[-_\s]*(\d{1,4})(?:\D|$)/i, /第\s*0*(\d{1,4})\s*章/];
+  for (const pattern4 of patterns) {
+    const match2 = name.match(pattern4);
+    if (!match2) continue;
+    const chapterNumber = Number(match2[1]);
+    if (Number.isInteger(chapterNumber) && chapterNumber > 0) return chapterNumber;
+  }
+  return void 0;
+}
+async function findSameChapterFile(api2, relativePath) {
+  if (extensionOf(relativePath) !== ".md") return void 0;
+  const chapterNumber = chapterNumberFromPath(relativePath);
+  if (!chapterNumber) return void 0;
+  const normalizedTarget = normalizePath(relativePath);
+  let listing;
+  try {
+    listing = await api2.listDirectory(dirname$1(normalizedTarget));
+  } catch {
+    return void 0;
+  }
+  const entry = listing.entries.find((candidate) => {
+    if (candidate.type !== "file") return false;
+    if (normalizePath(candidate.relativePath) === normalizedTarget) return false;
+    if (extensionOf(candidate.name) !== ".md") return false;
+    return chapterNumberFromPath(candidate.name) === chapterNumber;
+  });
+  return entry ? { entry, chapterNumber } : void 0;
+}
+async function assertNoSameChapterDuplicate(api2, relativePath) {
+  const duplicate = await findSameChapterFile(api2, relativePath);
+  if (!duplicate) return;
+  throw new Error(
+    `章节重复保护：${duplicate.entry.relativePath} 已经是第 ${duplicate.chapterNumber} 章。不要再创建 ${normalizePath(
+      relativePath
+    )}；请覆盖已有文件，或先用 move_file/rename_file/delete_file_or_folder 统一命名后再写入。`
+  );
 }
 function coerceStringArray(value) {
   if (Array.isArray(value)) {
@@ -59237,6 +59307,7 @@ function createBuiltinTools(runtime) {
         const path = requireString(args, "path");
         const rawType = optionalString(args, "type");
         const type4 = rawType === "directory" ? "directory" : "file";
+        if (type4 === "file") await assertNoSameChapterDuplicate(api2, path);
         return result("create_file_or_folder", await api2.createEntry(path, type4, optionalString(args, "content") ?? ""));
       }
     },
@@ -59283,7 +59354,7 @@ function createBuiltinTools(runtime) {
     },
     {
       name: "write_file_content",
-      description: "Write UTF-8 content to a project-relative file.",
+      description: "Write UTF-8 content to a project-relative file. When writing chapters, reuse the existing file for the same chapter number instead of creating a second file with a different name.",
       mode: "write",
       parameters: {
         type: "object",
@@ -59293,7 +59364,11 @@ function createBuiltinTools(runtime) {
         },
         required: ["path", "content"]
       },
-      execute: async (args) => result("write_file_content", await api2.writeFile(requireString(args, "path"), requireString(args, "content")))
+      execute: async (args) => {
+        const path = requireString(args, "path");
+        await assertNoSameChapterDuplicate(api2, path);
+        return result("write_file_content", await api2.writeFile(path, requireString(args, "content")));
+      }
     },
     {
       name: "replace_content_words",
@@ -59685,18 +59760,76 @@ ${prompt}
     },
     {
       name: "run_command",
-      description: "Run a shell command in the current project. Use sparingly.",
+      description: "Run a shell command in the current project only when local diagnostics, build checks, or file-state checks are necessary. Do not retry the exact same command after receiving stdout/stderr; use the prior result or change the command.",
       mode: "danger",
       parameters: {
         type: "object",
         properties: {
-          command: { type: "string", description: "Command to run in the current project root." }
+          command: { type: "string", description: "Command to run in the current project root. Must not be identical to a command already run in this turn unless the user explicitly requested a rerun." }
         },
         required: ["command"]
       },
       execute: async (args) => result("run_command", await api2.runCommand(requireString(args, "command")))
     }
   ];
+}
+const projectMutatingToolNames = /* @__PURE__ */ new Set([
+  "create_file_or_folder",
+  "rename_file",
+  "delete_file_or_folder",
+  "move_file",
+  "write_file_content",
+  "replace_content_words",
+  "move_file_to_index",
+  "update_chapter_status",
+  "todo_write",
+  "manipulate_file_lines",
+  "generate_image",
+  "edit_image"
+]);
+function normalizedPath(value) {
+  if (typeof value !== "string") return void 0;
+  const path = value.trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+/g, "/");
+  return path || void 0;
+}
+function rawRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function changedProjectPaths(name, args, raw) {
+  const paths = /* @__PURE__ */ new Set();
+  const add = (value) => {
+    const path = normalizedPath(value);
+    if (path) paths.add(path);
+  };
+  add(args.path);
+  add(args.targetPath);
+  add(args.targetDirectory);
+  const record = rawRecord(raw);
+  if (record) {
+    add(record.relativePath);
+    add(record.deleted);
+    add(record.path);
+    const written = rawRecord(record.written);
+    if (written) add(written.relativePath);
+    const currentWritten = rawRecord(record.currentWritten);
+    if (currentWritten) add(currentWritten.relativePath);
+  }
+  if (name === "todo_write") {
+    add(".wangyang/todos.json");
+  }
+  return [...paths];
+}
+function notifyProjectFilesChanged(name, args, raw) {
+  if (typeof window === "undefined" || !projectMutatingToolNames.has(name)) return;
+  window.dispatchEvent(
+    new CustomEvent("wangyang:project-files-changed", {
+      detail: {
+        source: "agent-tool",
+        tool: name,
+        paths: changedProjectPaths(name, args, raw)
+      }
+    })
+  );
 }
 async function createToolRegistry(api2, options = {}) {
   const builtin = createBuiltinTools({
@@ -59727,6 +59860,7 @@ async function createToolRegistry(api2, options = {}) {
       }
       try {
         const output = await tool.execute(args, signal);
+        if (output.isSuccess) notifyProjectFilesChanged(name, args, output.raw);
         return { ...output, toolCallId, name };
       } catch (error) {
         return {
@@ -59983,6 +60117,8 @@ function projectSystemLines(state) {
     `当前打开文件：${state.activeFilePath || "无"}`,
     "可用工具包括项目文件读取/写入、全文搜索、知识库搜索、智能上下文生成、章节状态更新、图片生成、子智能体请求和本地命令。",
     "使用工具前先判断是否真的需要；需要读取项目事实时不要臆测，先搜索或读取文件。写入、删除、移动、命令执行等高影响操作必须等待用户确认流程。",
+    "本地命令规则：只有在确实需要检查本地环境、目录、构建或文件状态时才使用 run_command；同一个命令不要重复执行，已有 stdout/stderr 后应先基于结果继续回答，除非用户明确要求重跑或你改变了命令参数。",
+    "章节落盘规则：当用户要求生成完整章节、续写成稿、改写成稿或多章正文时，除非用户明确要求只在聊天中预览，否则不要只把全文贴在聊天区；应先确定章节目录，优先读取 .wangyang/section-dirs.json 中“章节”的目录值，读取不到则使用 chapters，然后先 list_directory 检查现有章节文件。每个章号在同一目录只能保留一个 Markdown 文件；如果该章已存在，必须覆盖已有文件或先 rename/move 统一命名，绝不要同时创建 chapter-01.md 和 第1章-标题.md 这类双份文件。新章文件名应包含章序和标题；写入后只简要列出文件路径、字数和必要说明，不要重复粘贴整章全文。片段讨论、摘要、审查和纯建议不自动写入文件。",
     ...promptContextSystemLines(state.localSettings)
   ];
 }
@@ -61263,6 +61399,26 @@ function compactTraceText(text, maxChars = 1200) {
   return `${text.slice(0, maxChars)}
 ... ${text.length - maxChars} chars hidden`;
 }
+const USER_MESSAGE_PREVIEW_MAX_CHARS = 1200;
+const USER_MESSAGE_PREVIEW_MAX_LINES = 18;
+function compactUserMessageText(text) {
+  const lines = text.split(/\r?\n/);
+  if (text.length <= USER_MESSAGE_PREVIEW_MAX_CHARS && lines.length <= USER_MESSAGE_PREVIEW_MAX_LINES) {
+    return { text, truncated: false, hiddenChars: 0, hiddenLines: 0 };
+  }
+  const lineLimited = lines.slice(0, USER_MESSAGE_PREVIEW_MAX_LINES).join("\n");
+  const charLimited = lineLimited.length > USER_MESSAGE_PREVIEW_MAX_CHARS ? lineLimited.slice(0, USER_MESSAGE_PREVIEW_MAX_CHARS) : lineLimited;
+  const preview = charLimited.trimEnd();
+  const hiddenChars = Math.max(0, text.length - charLimited.length);
+  const hiddenLines = Math.max(0, lines.length - charLimited.split(/\r?\n/).length);
+  return {
+    text: `${preview}
+...`,
+    truncated: true,
+    hiddenChars,
+    hiddenLines
+  };
+}
 function AgentWorkbench({ onCollapse }) {
   const messages2 = useAppStore((state) => state.messages);
   const draft = useAppStore((state) => state.draft);
@@ -61331,6 +61487,7 @@ function AgentWorkbench({ onCollapse }) {
   const [modelOverrides, setModelOverrides] = reactExports.useState(readAgentModelOverrides);
   const [agentTemperature, setAgentTemperature] = reactExports.useState(0.2);
   const [isComposerDragOver, setIsComposerDragOver] = reactExports.useState(false);
+  const [expandedUserMessageIds, setExpandedUserMessageIds] = reactExports.useState(() => /* @__PURE__ */ new Set());
   const imageInputRef = reactExports.useRef(null);
   const agentScrollRef = reactExports.useRef(null);
   const userMessageRefs = reactExports.useRef({});
@@ -62201,16 +62358,41 @@ ${scoped.map((item) => `- [${item.status === "completed" ? "x" : " "}] [${item.s
   ] }, message2.id);
   const renderUserMessage = (message2) => {
     const displayed = splitDisplayedUserContent(message2.content);
+    const compacted = compactUserMessageText(displayed.visible);
+    const isExpanded = expandedUserMessageIds.has(message2.id);
+    const visibleText = compacted.truncated && !isExpanded ? compacted.text : displayed.visible;
     return /* @__PURE__ */ jsxRuntimeExports.jsxs(
       "article",
       {
-        className: "agent-message user",
+        className: compacted.truncated && !isExpanded ? "agent-message user compact" : "agent-message user",
         ref: (node2) => {
           userMessageRefs.current[message2.id] = node2;
         },
         children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("header", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "用户" }) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { children: displayed.visible }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { children: visibleText }),
+          compacted.truncated ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "button",
+            {
+              className: isExpanded ? "message-expand-button expanded" : "message-expand-button",
+              onClick: () => setExpandedUserMessageIds((current) => {
+                const next2 = new Set(current);
+                if (next2.has(message2.id)) next2.delete(message2.id);
+                else next2.add(message2.id);
+                return next2;
+              }),
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: isExpanded ? "收起" : "显示更多" }),
+                !isExpanded ? /* @__PURE__ */ jsxRuntimeExports.jsxs("em", { children: [
+                  "隐藏 ",
+                  compacted.hiddenChars.toLocaleString("zh-CN"),
+                  " 字",
+                  compacted.hiddenLines ? ` / ${compacted.hiddenLines} 行` : ""
+                ] }) : null,
+                /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronDown, { size: 13 })
+              ]
+            }
+          ) : null,
           displayed.context ? /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { className: "agent-user-context", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("summary", { children: "已附加智能体上下文" }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { children: displayed.context })
@@ -80891,6 +81073,7 @@ function ProjectExplorer({ isSidebarCollapsed = false, onToggleSidebar }) {
     targetPath: "",
     sectionTitle: ""
   });
+  const [entryContextMenu, setEntryContextMenu] = reactExports.useState();
   const [knowledgeDialog, setKnowledgeDialog] = reactExports.useState({
     open: false,
     name: "项目知识库",
@@ -81347,14 +81530,47 @@ function ProjectExplorer({ isSidebarCollapsed = false, onToggleSidebar }) {
     if (activeNav !== "技能") return;
     void refreshSkills();
   }, [activeNav]);
-  const refreshAllSections = async () => {
+  reactExports.useEffect(() => {
+    if (!entryContextMenu?.open) return;
+    const closeMenu = () => setEntryContextMenu(void 0);
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") closeMenu();
+    };
+    window.addEventListener("mousedown", closeMenu);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("mousedown", closeMenu);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [entryContextMenu?.open]);
+  const refreshAllSections = reactExports.useCallback(async () => {
     await Promise.all(visibleSections.map((section) => loadSection(section, sectionDirs[section.title] ?? section.dir)));
     await refreshChapterStats();
     await refreshMcpStatus();
     await refreshProjectMetadata();
     await refreshChapterStatus();
     await refreshKnowledgeBases();
-  };
+  }, [
+    loadSection,
+    refreshChapterStats,
+    refreshChapterStatus,
+    refreshKnowledgeBases,
+    refreshMcpStatus,
+    refreshProjectMetadata,
+    sectionDirs,
+    visibleSections
+  ]);
+  reactExports.useEffect(() => {
+    const refreshAfterProjectFileChange = () => {
+      void refreshAllSections();
+    };
+    window.addEventListener("wangyang:project-files-changed", refreshAfterProjectFileChange);
+    return () => window.removeEventListener("wangyang:project-files-changed", refreshAfterProjectFileChange);
+  }, [refreshAllSections]);
   const setAllSectionsExpanded = (expanded) => {
     const next2 = Object.fromEntries(visibleSections.map((section) => [section.title, expanded]));
     setExpandedSections((current) => ({ ...current, ...next2 }));
@@ -81551,6 +81767,26 @@ function ProjectExplorer({ isSidebarCollapsed = false, onToggleSidebar }) {
       return;
     }
     void openProjectFile(relativePath);
+  };
+  const openEntryContextMenu = (event, entry) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const menuWidth = 188;
+    const menuHeight = 42;
+    setEntryContextMenu({
+      open: true,
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+      entry
+    });
+  };
+  const revealEntryInExplorer = async (relativePath) => {
+    try {
+      await window.electronAPI.showProjectPathInFolder(relativePath);
+      setEntryContextMenu(void 0);
+    } catch (error) {
+      message2.error(error instanceof Error ? error.message : "打开资源管理器失败");
+    }
   };
   const saveAndOpenPendingFile = async () => {
     if (!pendingOpenPath) return;
@@ -82220,81 +82456,89 @@ ${draft.prompt}
       isLoading ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "empty-mini", children: "加载中..." }) : null,
       !isLoading && entries.length ? entries.slice(0, 30).map((entry) => {
         const chapterStatus = section.title === "章节" ? chapterStatusMap[entry.relativePath] : void 0;
-        return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "chapter-row-wrap", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs(
-            "button",
-            {
-              className: "chapter-row",
-              onClick: () => {
-                if (entry.type === "directory") void changeSectionDir(section, entry.relativePath);
-                else if (isEditableTextPath(entry.relativePath)) requestOpenProjectFile(entry.relativePath);
-                else if (isImagePath(entry.relativePath)) void openAssetPreview(entry);
-                else void openAssetPreview(entry);
-              },
-              title: entry.relativePath,
-              children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: entry.type === "directory" ? "folder" : "file", size: 13 }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: entry.name }),
-                chapterStatus ? /* @__PURE__ */ jsxRuntimeExports.jsx("em", { className: "chapter-status-pill", children: chapterStatus.status }) : null
-              ]
-            }
-          ),
-          section.special === "cover" && entry.type === "file" && isImagePath(entry.relativePath) ? /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              className: "entry-action",
-              title: "编辑图片",
-              onClick: () => openImageDialog("edit", entry.relativePath),
-              children: /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: "assets", size: 12 })
-            }
-          ) : null,
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              className: "entry-action",
-              title: "重命名",
-              onClick: () => setRenameDialog({
-                open: true,
-                path: entry.relativePath,
-                name: entry.name,
-                sectionTitle: section.title
-              }),
-              children: /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: "edit", size: 12 })
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              className: "entry-action",
-              title: "移动",
-              onClick: () => setMoveDialog({
-                open: true,
-                sourcePath: entry.relativePath,
-                targetPath: entry.relativePath,
-                sectionTitle: section.title
-              }),
-              children: /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: "move", size: 12 })
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              className: "entry-action",
-              title: "归档",
-              onClick: () => archiveEntry(section.title, entry.relativePath),
-              children: /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: "archive", size: 12 })
-            }
-          ),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "button",
-            {
-              className: "entry-action danger",
-              title: "删除",
-              onClick: () => deleteEntry(section.title, entry.relativePath),
-              children: /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: "delete", size: 12 })
-            }
-          )
-        ] }, entry.relativePath);
+        return /* @__PURE__ */ jsxRuntimeExports.jsxs(
+          "div",
+          {
+            className: "chapter-row-wrap",
+            onContextMenu: (event) => openEntryContextMenu(event, entry),
+            children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "button",
+                {
+                  className: "chapter-row",
+                  onClick: () => {
+                    if (entry.type === "directory") void changeSectionDir(section, entry.relativePath);
+                    else if (isEditableTextPath(entry.relativePath)) requestOpenProjectFile(entry.relativePath);
+                    else if (isImagePath(entry.relativePath)) void openAssetPreview(entry);
+                    else void openAssetPreview(entry);
+                  },
+                  title: entry.relativePath,
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: entry.type === "directory" ? "folder" : "file", size: 13 }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: entry.name }),
+                    chapterStatus ? /* @__PURE__ */ jsxRuntimeExports.jsx("em", { className: "chapter-status-pill", children: chapterStatus.status }) : null
+                  ]
+                }
+              ),
+              section.special === "cover" && entry.type === "file" && isImagePath(entry.relativePath) ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  className: "entry-action",
+                  title: "编辑图片",
+                  onClick: () => openImageDialog("edit", entry.relativePath),
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: "assets", size: 12 })
+                }
+              ) : null,
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  className: "entry-action",
+                  title: "重命名",
+                  onClick: () => setRenameDialog({
+                    open: true,
+                    path: entry.relativePath,
+                    name: entry.name,
+                    sectionTitle: section.title
+                  }),
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: "edit", size: 12 })
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  className: "entry-action",
+                  title: "移动",
+                  onClick: () => setMoveDialog({
+                    open: true,
+                    sourcePath: entry.relativePath,
+                    targetPath: entry.relativePath,
+                    sectionTitle: section.title
+                  }),
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: "move", size: 12 })
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  className: "entry-action",
+                  title: "归档",
+                  onClick: () => archiveEntry(section.title, entry.relativePath),
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: "archive", size: 12 })
+                }
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(
+                "button",
+                {
+                  className: "entry-action danger",
+                  title: "删除",
+                  onClick: () => deleteEntry(section.title, entry.relativePath),
+                  children: /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: "delete", size: 12 })
+                }
+              )
+            ]
+          },
+          entry.relativePath
+        );
       }) : null,
       !isLoading && entries.length === 0 && section.title === "章节" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { className: "import-book", onClick: openImportBookDialog, children: [
@@ -82408,6 +82652,26 @@ ${draft.prompt}
           ] })
         ] })
       ] }),
+      entryContextMenu?.open ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "div",
+        {
+          className: "entry-context-menu",
+          style: { left: entryContextMenu.x, top: entryContextMenu.y },
+          onMouseDown: (event) => event.stopPropagation(),
+          onContextMenu: (event) => event.preventDefault(),
+          children: /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            "button",
+            {
+              title: entryContextMenu.entry.relativePath,
+              onClick: () => void revealEntryInExplorer(entryContextMenu.entry.relativePath),
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(OriginalIcon, { name: "folder", size: 14 }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "在资源管理器中打开" })
+              ]
+            }
+          )
+        }
+      ) : null,
       /* @__PURE__ */ jsxRuntimeExports.jsxs("details", { className: "path-config", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("summary", { children: "项目路径" }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "inline-input", children: [

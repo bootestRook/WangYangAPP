@@ -1687,6 +1687,46 @@ pre {
   color: var(--wy-error);
 }
 
+.entry-context-menu {
+  position: fixed;
+  z-index: 90;
+  width: 188px;
+  padding: 4px;
+  border: 1px solid var(--wy-border);
+  border-radius: 6px;
+  background: var(--wy-panel);
+  box-shadow: var(--wy-shadow-panel);
+}
+
+.entry-context-menu button {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--wy-text-secondary);
+  text-align: left;
+  font-size: 12px;
+}
+
+.entry-context-menu button:hover {
+  background: var(--wy-selected);
+  color: var(--wy-text);
+}
+
+.entry-context-menu button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .import-book,
 .smart-card button {
   width: 100%;
@@ -3528,6 +3568,47 @@ pre {
   background: rgba(91, 141, 239, 0.12);
 }
 
+.agent-message.user.compact pre {
+  margin-bottom: 8px;
+}
+
+.message-expand-button {
+  width: fit-content;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border: 1px solid rgba(91, 141, 239, 0.34);
+  border-radius: 5px;
+  background: rgba(91, 141, 239, 0.1);
+  color: var(--wy-accent);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.message-expand-button:hover {
+  border-color: var(--wy-primary-active);
+  background: rgba(91, 141, 239, 0.18);
+}
+
+.message-expand-button em {
+  color: var(--wy-text-muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.message-expand-button svg {
+  color: currentColor;
+  transition: transform 0.16s ease;
+}
+
+.message-expand-button.expanded svg {
+  transform: rotate(180deg);
+}
+
 .agent-user-context {
   margin-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
@@ -3981,13 +4062,17 @@ pre {
 
 .composer-popup {
   position: absolute;
+  box-sizing: border-box;
   z-index: 8;
   left: 14px;
   right: 14px;
   bottom: 50px;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 8px;
   max-height: min(330px, calc(100vh - 260px));
+  overflow: hidden;
+  overscroll-behavior: contain;
   padding: 10px;
   border: 1px solid #3a3a3a;
   border-radius: 6px;
@@ -4048,9 +4133,13 @@ pre {
 
 .popup-list {
   display: grid;
+  align-content: start;
   gap: 6px;
   min-height: 0;
-  overflow: auto;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 2px;
   scrollbar-width: thin;
   scrollbar-color: var(--wy-scrollbar-thumb) #121212;
 }
@@ -4064,6 +4153,7 @@ pre {
 
 .popup-list button {
   min-width: 0;
+  max-width: 100%;
   min-height: 40px;
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) auto;
@@ -4132,6 +4222,10 @@ pre {
 .prompts-popup .popup-list button,
 .thinking-popup .popup-list button {
   grid-template-columns: 20px minmax(0, 1fr);
+}
+
+.capacity-popup {
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .permission-popup .popup-list button {
@@ -7424,6 +7518,50 @@ html body .file-search-results {
 html body .file-search-results button {
   min-height: 34px !important;
   padding: 6px 8px !important;
+}
+
+html body .agent-message .message-expand-button {
+  width: fit-content;
+  min-height: 24px;
+  background: rgba(91, 141, 239, 0.1) !important;
+  color: var(--wy-accent) !important;
+  box-shadow: none !important;
+}
+
+html body .agent-message .message-expand-button:hover {
+  border-color: var(--wy-primary-active) !important;
+  background: rgba(91, 141, 239, 0.18) !important;
+}
+
+html body .agent-message .message-expand-button svg {
+  color: currentColor !important;
+}
+
+html body .agent-message .message-expand-button em {
+  color: var(--wy-text-muted) !important;
+}
+
+html body .entry-context-menu {
+  border-color: var(--wy-border) !important;
+  background: var(--wy-panel) !important;
+  color: var(--wy-text-secondary) !important;
+  box-shadow: var(--wy-shadow-panel) !important;
+}
+
+html body .entry-context-menu button {
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--wy-text-secondary) !important;
+  box-shadow: none !important;
+}
+
+html body .entry-context-menu button:hover {
+  background: var(--wy-selected) !important;
+  color: var(--wy-text) !important;
+}
+
+html body .entry-context-menu button svg {
+  color: currentColor !important;
 }
 
 /* History panel needs enough room for import/export/clear/new actions. */

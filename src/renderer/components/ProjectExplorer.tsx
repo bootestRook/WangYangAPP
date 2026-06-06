@@ -2,7 +2,7 @@ import { App as AntApp, Button, Input, Modal, Select } from 'antd'
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx'
 import { strToU8, zipSync, type Zippable } from 'fflate'
 import { ChevronDown, ChevronUp } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import type { ProjectBackupInfo, ProjectEntry, ProjectInfo, ProjectTemplateType, SkillInfo, SmartContextGenerationResult } from '../../shared/types'
 import { OriginalIcon, type OriginalIconName } from './OriginalIcon'
 import { useAppStore } from '../stores/useAppStore'
@@ -46,6 +46,12 @@ type KnowledgeSearchResult = {
   line: number
   preview: string
   knowledgeBase: string
+}
+type EntryContextMenuState = {
+  open: boolean
+  x: number
+  y: number
+  entry: ProjectEntry
 }
 
 const sections: ProjectSection[] = [
@@ -563,6 +569,7 @@ export function ProjectExplorer({ isSidebarCollapsed = false, onToggleSidebar }:
     targetPath: '',
     sectionTitle: ''
   })
+  const [entryContextMenu, setEntryContextMenu] = useState<EntryContextMenuState | undefined>()
   const [knowledgeDialog, setKnowledgeDialog] = useState({
     open: false,
     name: '项目知识库',
@@ -1056,14 +1063,49 @@ export function ProjectExplorer({ isSidebarCollapsed = false, onToggleSidebar }:
     void refreshSkills()
   }, [activeNav])
 
-  const refreshAllSections = async (): Promise<void> => {
+  useEffect(() => {
+    if (!entryContextMenu?.open) return
+    const closeMenu = (): void => setEntryContextMenu(undefined)
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') closeMenu()
+    }
+    window.addEventListener('mousedown', closeMenu)
+    window.addEventListener('resize', closeMenu)
+    window.addEventListener('scroll', closeMenu, true)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('mousedown', closeMenu)
+      window.removeEventListener('resize', closeMenu)
+      window.removeEventListener('scroll', closeMenu, true)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [entryContextMenu?.open])
+
+  const refreshAllSections = useCallback(async (): Promise<void> => {
     await Promise.all(visibleSections.map((section) => loadSection(section, sectionDirs[section.title] ?? section.dir)))
     await refreshChapterStats()
     await refreshMcpStatus()
     await refreshProjectMetadata()
     await refreshChapterStatus()
     await refreshKnowledgeBases()
-  }
+  }, [
+    loadSection,
+    refreshChapterStats,
+    refreshChapterStatus,
+    refreshKnowledgeBases,
+    refreshMcpStatus,
+    refreshProjectMetadata,
+    sectionDirs,
+    visibleSections
+  ])
+
+  useEffect(() => {
+    const refreshAfterProjectFileChange = (): void => {
+      void refreshAllSections()
+    }
+    window.addEventListener('wangyang:project-files-changed', refreshAfterProjectFileChange)
+    return () => window.removeEventListener('wangyang:project-files-changed', refreshAfterProjectFileChange)
+  }, [refreshAllSections])
 
   const setAllSectionsExpanded = (expanded: boolean): void => {
     const next = Object.fromEntries(visibleSections.map((section) => [section.title, expanded]))
@@ -1281,6 +1323,28 @@ export function ProjectExplorer({ isSidebarCollapsed = false, onToggleSidebar }:
       return
     }
     void openProjectFile(relativePath)
+  }
+
+  const openEntryContextMenu = (event: ReactMouseEvent<HTMLElement>, entry: ProjectEntry): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    const menuWidth = 188
+    const menuHeight = 42
+    setEntryContextMenu({
+      open: true,
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+      entry
+    })
+  }
+
+  const revealEntryInExplorer = async (relativePath: string): Promise<void> => {
+    try {
+      await window.electronAPI.showProjectPathInFolder(relativePath)
+      setEntryContextMenu(undefined)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '打开资源管理器失败')
+    }
   }
 
   const saveAndOpenPendingFile = async (): Promise<void> => {
@@ -2005,7 +2069,11 @@ export function ProjectExplorer({ isSidebarCollapsed = false, onToggleSidebar }:
           ? entries.slice(0, 30).map((entry) => {
               const chapterStatus = section.title === '章节' ? chapterStatusMap[entry.relativePath] : undefined
               return (
-              <div className="chapter-row-wrap" key={entry.relativePath}>
+              <div
+                className="chapter-row-wrap"
+                key={entry.relativePath}
+                onContextMenu={(event) => openEntryContextMenu(event, entry)}
+              >
                 <button
                   className="chapter-row"
                   onClick={() => {
@@ -2218,6 +2286,23 @@ export function ProjectExplorer({ isSidebarCollapsed = false, onToggleSidebar }:
           </footer>
         </div>
       </div>
+
+      {entryContextMenu?.open ? (
+        <div
+          className="entry-context-menu"
+          style={{ left: entryContextMenu.x, top: entryContextMenu.y }}
+          onMouseDown={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <button
+            title={entryContextMenu.entry.relativePath}
+            onClick={() => void revealEntryInExplorer(entryContextMenu.entry.relativePath)}
+          >
+            <OriginalIcon name="folder" size={14} />
+            <span>在资源管理器中打开</span>
+          </button>
+        </div>
+      ) : null}
 
       <details className="path-config">
         <summary>项目路径</summary>

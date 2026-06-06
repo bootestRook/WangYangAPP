@@ -1202,6 +1202,7 @@ async function writeProjectFile(root, relativePath, content) {
   const target = resolveInsideRoot$1(root, relativePath);
   await promises.mkdir(path.dirname(target), { recursive: true });
   await promises.writeFile(target, content, "utf8");
+  await addProjectConfigEntry(ensureRoot$4(root), relativePath);
   return { relativePath, bytes: Buffer.byteLength(content, "utf8") };
 }
 async function createProjectEntry(root, relativePath, type, content = "") {

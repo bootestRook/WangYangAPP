@@ -598,6 +598,32 @@ function compactTraceText(text: string, maxChars = 1200): string {
   return `${text.slice(0, maxChars)}\n... ${text.length - maxChars} chars hidden`
 }
 
+const USER_MESSAGE_PREVIEW_MAX_CHARS = 1200
+const USER_MESSAGE_PREVIEW_MAX_LINES = 18
+
+function compactUserMessageText(text: string): { text: string; truncated: boolean; hiddenChars: number; hiddenLines: number } {
+  const lines = text.split(/\r?\n/)
+  if (text.length <= USER_MESSAGE_PREVIEW_MAX_CHARS && lines.length <= USER_MESSAGE_PREVIEW_MAX_LINES) {
+    return { text, truncated: false, hiddenChars: 0, hiddenLines: 0 }
+  }
+
+  const lineLimited = lines.slice(0, USER_MESSAGE_PREVIEW_MAX_LINES).join('\n')
+  const charLimited =
+    lineLimited.length > USER_MESSAGE_PREVIEW_MAX_CHARS
+      ? lineLimited.slice(0, USER_MESSAGE_PREVIEW_MAX_CHARS)
+      : lineLimited
+  const preview = charLimited.trimEnd()
+  const hiddenChars = Math.max(0, text.length - charLimited.length)
+  const hiddenLines = Math.max(0, lines.length - charLimited.split(/\r?\n/).length)
+
+  return {
+    text: `${preview}\n...`,
+    truncated: true,
+    hiddenChars,
+    hiddenLines
+  }
+}
+
 interface AgentWorkbenchProps {
   onCollapse?: () => void
 }
@@ -670,6 +696,7 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
   const [modelOverrides, setModelOverrides] = useState<AgentModelOverrides>(readAgentModelOverrides)
   const [agentTemperature, setAgentTemperature] = useState(0.2)
   const [isComposerDragOver, setIsComposerDragOver] = useState(false)
+  const [expandedUserMessageIds, setExpandedUserMessageIds] = useState<Set<string>>(() => new Set())
   const imageInputRef = useRef<HTMLInputElement>(null)
   const agentScrollRef = useRef<HTMLDivElement>(null)
   const userMessageRefs = useRef<Record<string, HTMLElement | null>>({})
@@ -1668,10 +1695,13 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
 
   const renderUserMessage = (message: ChatMessage) => {
     const displayed = splitDisplayedUserContent(message.content)
+    const compacted = compactUserMessageText(displayed.visible)
+    const isExpanded = expandedUserMessageIds.has(message.id)
+    const visibleText = compacted.truncated && !isExpanded ? compacted.text : displayed.visible
 
     return (
       <article
-        className="agent-message user"
+        className={compacted.truncated && !isExpanded ? 'agent-message user compact' : 'agent-message user'}
         key={message.id}
         ref={(node) => {
           userMessageRefs.current[message.id] = node
@@ -1680,7 +1710,29 @@ export function AgentWorkbench({ onCollapse }: AgentWorkbenchProps) {
         <header>
           <span>用户</span>
         </header>
-        <pre>{displayed.visible}</pre>
+        <pre>{visibleText}</pre>
+        {compacted.truncated ? (
+          <button
+            className={isExpanded ? 'message-expand-button expanded' : 'message-expand-button'}
+            onClick={() =>
+              setExpandedUserMessageIds((current) => {
+                const next = new Set(current)
+                if (next.has(message.id)) next.delete(message.id)
+                else next.add(message.id)
+                return next
+              })
+            }
+          >
+            <span>{isExpanded ? '收起' : '显示更多'}</span>
+            {!isExpanded ? (
+              <em>
+                隐藏 {compacted.hiddenChars.toLocaleString('zh-CN')} 字
+                {compacted.hiddenLines ? ` / ${compacted.hiddenLines} 行` : ''}
+              </em>
+            ) : null}
+            <ChevronDown size={13} />
+          </button>
+        ) : null}
         {displayed.context ? (
           <details className="agent-user-context">
             <summary>已附加智能体上下文</summary>
